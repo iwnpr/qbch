@@ -1,7 +1,7 @@
-﻿using System;
+﻿using QBCH_lib.qcb_xml.v3_0.qcb_request;
+using System;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
-using QBCH_lib.qcb_xml.v2_0.qcb_request;
 
 namespace QBCH_lib.CommonTypes.Api
 {
@@ -28,12 +28,7 @@ namespace QBCH_lib.CommonTypes.Api
         /// <summary>
         /// Тикет
         /// </summary>
-        public qcb_xml.v1_3.qcb_result.Результат? Ticket { get; set; }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        public qcb_xml.v2_0.qcb_result.Результат? Ticket_v2 { get; set; }
+        public qcb_xml.v3_0.qcb_result.Результат? Ticket { get; set; }
 
         /// <summary>
         /// 
@@ -121,8 +116,17 @@ namespace QBCH_lib.CommonTypes.Api
         public string? IpAddress { get; set; }
 
         /// <summary>
-        ///  
+        ///  Десериализованная модель входного запроса
         /// </summary>
-        public ЗапросСведений? Request { get; set; } = null;
+        public object? RequestPayload { get; set; } = null;
+
+        /// <summary>
+        /// Десериализованная модель запроса версии 3.0.
+        /// </summary>
+        public ЗапросСведений? Request
+        {
+            get => RequestPayload as ЗапросСведений;
+            set => RequestPayload = value;
+        }
     }
 }

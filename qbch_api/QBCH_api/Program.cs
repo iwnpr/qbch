@@ -1,31 +1,44 @@
-using System.Reflection;
-using System.Security.Cryptography.X509Certificates;
-using Adapters_lib;
 using Asp.Versioning;
-using Confluent.Kafka;
-using Confluent.Kafka.Extensions.Diagnostics;
-using Elastic.Apm.SerilogEnricher;
+using Cache_lib.Implementations;
+using Cache_lib.Interfaces;
+using CertManagement.Services.Implementations;
+using CertManagement.Services.Interfaces;
+using Crypto_lib.Service;
+using KafkaService_lib.Services.Implementation;
+using KafkaService_lib.Services.Interfaces;
 using Microsoft.AspNetCore.Authentication.Certificate;
+using QBCH_api.Configuration;
 using Microsoft.FeatureManagement;
 using Microsoft.OpenApi.Models;
+using QBCH_api.Services.Implementations;
+using QBCH_api.Services.Interfaces;
+using Qbch_db_lib.Services.Implementations;
+using Qbch_db_lib.Services.Interfaces;
+using QBCH_lib.CommonTypes.Api;
+using QBCH_lib.Services.Implementations;
+using QBCH_lib.Services.Interfaces;
+using QBCHService_lib.Services.Implementations;
+using QBCHService_lib.Services.Interfaces;
 using Serilog;
 using Serilog.Core;
-using Serilog.Enrichers.Span;
-using Services_lib;
+using StackExchange.Redis;
+using System.Reflection;
+using System.Security.Cryptography.X509Certificates;
+using IXmlService = XmlService_lib.Services.Interfaces.IXmlService;
+using XmlService = XmlService_lib.Services.Implementations.XmlService;
 
-ThreadPool.SetMinThreads(200, 200);
+
 var builder = WebApplication.CreateBuilder(args);
 var configuration = builder.Configuration;
-var serilog = new LoggerConfiguration()
-    .ReadFrom.Configuration(configuration)
-    .Enrich.WithElasticApmCorrelationInfo() //  trace.id  transaction.id
-    .Enrich.WithSpan() //  span.id    
-    .CreateLogger();
+var serilog = new LoggerConfiguration().ReadFrom.Configuration(configuration).CreateLogger();
 
+builder.Services.Configure<ApiV3ContractOptions>(configuration.GetSection(ApiV3ContractOptions.SectionName));
+var contractOptions = configuration.GetSection(ApiV3ContractOptions.SectionName).Get<ApiV3ContractOptions>() ?? new ApiV3ContractOptions();
+
+builder.Services.AddSingleton(new ApiV3ContractRules(contractOptions));
 builder.Host.UseSerilog(serilog);
-builder.Services.AddAllElasticApm();
-
 builder.Services.AddControllers();
+
 builder.Services.AddApiVersioning(options =>
 {
     var isDefaultApiVersionSet = builder.Configuration.GetValue<bool>("Features:SetDefaultApiVersion");
@@ -46,28 +59,30 @@ builder.Services.AddApiVersioning(options =>
         options.GroupNameFormat = "'v'VVV";
         options.SubstituteApiVersionInUrl = true;
     }).AddMvc();
+
 builder.Services.AddAuthentication(
              CertificateAuthenticationDefaults.AuthenticationScheme)
              .AddCertificate(options =>
              options.AllowedCertificateTypes = CertificateTypes.All);
+
 // Добавление сервисов в контейнер
 builder.Services.AddFeatureManagement(builder.Configuration.GetSection("FeatureFlags"));
-builder.Services
-    .DIAddAdapters(configuration)
-    .DIAddServices();
-builder.Services.AddMediatR(opt =>
-{
-    opt.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly());
-    opt.Lifetime = ServiceLifetime.Transient;
-});
-builder.Services.AddMemoryCache();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options =>
-{
-    options.SwaggerDoc("v2", new OpenApiInfo { Title = "API сервиса QBCH V2", Version = "v2.0" });
-    options.EnableAnnotations();
-    options.UseInlineDefinitionsForEnums();
-});
+builder.Services.AddTransient<ICryptoService, CryptoService>();
+builder.Services.AddTransient<IXmlService, XmlService>();
+builder.Services.AddTransient<IValidationService, ValidationService>();
+builder.Services.AddTransient<IRepository, Repository>();
+builder.Services.AddTransient<IQBCHService, QBCHService>();
+builder.Services.AddTransient<ITransformer, Transformer>();
+builder.Services.AddTransient<ITicketService, TicketService>();
+builder.Services.AddTransient<ICertManagementService, CertManagementService>();
+builder.Services.AddSingleton<ICompressService, CompressService>();
+builder.Services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(configuration.GetConnectionString("Redis")));
+
+ThreadPool.SetMinThreads(200, 200);
+builder.Services.AddTransient<ICacheService, CacheService>();
+builder.Services.AddSingleton<IBKIRequisitsHandler, BKIRequsits>();
+builder.Services.AddSingleton<IKafkaService, KafkaService>();
+
 // Добавление http-клиентов в HttpClientFactory
 try
 {
@@ -115,7 +130,7 @@ try
     // Добавление именованных http-клиентов в фабрику клиентов
     foreach (var item in builder.Configuration.GetSection("QBCH").GetChildren())
     {
-        AddHttpClientToFactory(builder, serilog, foundCertColl, item);
+        AddHttpClientToFactory(builder, serilog, foundCertColl, item, contractOptions.HttpClientTimeoutSeconds);
     }
 }
 catch (Exception ex)
@@ -124,6 +139,23 @@ catch (Exception ex)
     return;
 }
 
+builder.Services.AddMediatR(opt =>
+{
+    opt.RegisterServicesFromAssembly(Assembly.GetExecutingAssembly());
+    opt.Lifetime = ServiceLifetime.Transient;
+});
+
+// Swagger
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddMemoryCache();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v3", new OpenApiInfo { Title = "API сервиса QBCH V3", Version = "v3.0" });
+    options.SwaggerDoc("v2", new OpenApiInfo { Title = "API сервиса QBCH V2", Version = "v2.0" });
+    options.SwaggerDoc("v1.3", new OpenApiInfo { Title = "API сервиса QBCH V1", Version = "v1.3" });
+    options.EnableAnnotations();
+    options.UseInlineDefinitionsForEnums();
+});
 
 var app = builder.Build();
 app.UseSerilogRequestLogging();
@@ -131,17 +163,19 @@ app.UseRouting();
 app.UseCertificateForwarding();
 app.UseDeveloperExceptionPage();
 
+// Enable middleware to serve generated Swagger as a JSON endpoint.
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
+    c.SwaggerEndpoint("v1.3/swagger.json", "API сервиса QBCH V1");
     c.SwaggerEndpoint("v2/swagger.json", "API сервиса QBCH V2");
+    c.SwaggerEndpoint("v3/swagger.json", "API сервиса QBCH V3");
 });
-
 app.MapControllers();
 app.Run();
 
 // Метод добавляющий http-client в фабрику клиентов
-static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog, X509Certificate2 certificate, IConfigurationSection section)
+static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog, X509Certificate2 certificate, IConfigurationSection section, int httpClientTimeoutSeconds)
 {
     var clientName = section.GetValue<string>("Name");
     var url = section.GetValue<string>("Url");
@@ -163,7 +197,7 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
     // Проверяем, что значение указано
     if (string.IsNullOrEmpty(urlv2))
     {
-        serilog.Fatal("Отсутствует BaseAddress для http-клиента v2: {clientName}.", clientName);
+        serilog.Fatal("Отсутствует BaseAddress для http-клиента v3: {clientName}.", clientName);
         throw new NullReferenceException();
     }
 
@@ -172,6 +206,7 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
     {
         client.BaseAddress = new(url);
         client.Timeout = TimeSpan.FromSeconds(4);
+        client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
     })
         // Добавляем сертификат в запрос
         .ConfigurePrimaryHttpMessageHandler(() =>
@@ -184,10 +219,11 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
             };
         });
 
-    builder.Services.AddHttpClient($"{clientName}v2", client =>
+    builder.Services.AddHttpClient($"{clientName}v3", client =>
     {
         client.BaseAddress = new(urlv2);
         client.Timeout = TimeSpan.FromSeconds(4);
+        client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
     })
         // Добавляем сертификат в запрос
         .ConfigurePrimaryHttpMessageHandler(() =>

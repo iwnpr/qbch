@@ -1,10 +1,10 @@
-﻿using System.Diagnostics.CodeAnalysis;
-using System.Text;
-using Cache_lib.Interfaces;
+﻿using Cache_lib.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using QBCH_lib.core;
 using StackExchange.Redis;
+using System.Diagnostics.CodeAnalysis;
+using System.Text;
 
 namespace Cache_lib.Implementations
 {
@@ -16,10 +16,11 @@ namespace Cache_lib.Implementations
         private readonly IConfiguration _config;
         private readonly ILogger<CacheService> _logger;
         private readonly IConnectionMultiplexer _connectionMultiplexer;
-        private IDatabase _redisDb;
+        private readonly IDatabase _redisDb;
         private readonly int _uniqueIdExpirityDays;
         private readonly int _permissionsExpirationHours;
         private readonly int _reconnectCount;
+        private readonly long _defaultHashExpirationMinutes;
 
         /// <summary>
         /// Конструктор
@@ -35,6 +36,10 @@ namespace Cache_lib.Implementations
             _uniqueIdExpirityDays = config.GetValue<int?>("RedisCache:RequestIdUniqueDays") ?? 1;
             _permissionsExpirationHours = config.GetValue<int?>("RedisCache:PermissionsExpirationHours") ?? 4;
             _reconnectCount = config.GetValue<int?>("RedisCache:ReconnectCount") ?? 5;
+            var retentionHours = config.GetValue<int?>("ApiV3Contract:ResponseRetentionHours")
+                                 ?? config.GetValue<int?>("RedisCache:HashExpirityHours")
+                                 ?? 8;
+            _defaultHashExpirationMinutes = retentionHours * 60L;
         }
 
         /// <summary>
@@ -47,12 +52,6 @@ namespace Cache_lib.Implementations
         public async Task AddHash(string methodName, string pKey, string pField, string pStrData, CancellationToken? ct = null)
         {
             await AddHash(methodName, pKey, pField, Encoding.UTF8.GetBytes(pStrData), ct: ct);
-        }
-
-        public async Task AddHashDlPut(string methodName, string pKey, string pField, string pData, CancellationToken? ct = null)
-        {
-            var key = KeyFormatter([methodName, pKey]);
-            await _redisDb.HashSetAsync(key, [new(pField, pData)]);
         }
 
         /// <summary>
@@ -261,10 +260,11 @@ namespace Cache_lib.Implementations
         public async Task TrySetKeyExpiration(string methodName, string pKey, long minutes, CancellationToken? ct = null)
         {
             var key = KeyFormatter(new[] { methodName, pKey });
+            var ttlInMinutes = minutes > 0 ? minutes : _defaultHashExpirationMinutes;
 
             try
             {
-                await _redisDb.KeyExpireAsync(key, TimeSpan.FromMinutes(minutes));
+                await _redisDb.KeyExpireAsync(key, TimeSpan.FromMinutes(ttlInMinutes));
             }
             catch (Exception ex)
             {

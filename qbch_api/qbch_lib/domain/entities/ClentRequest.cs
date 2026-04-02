@@ -1,8 +1,7 @@
-﻿using System;
+﻿using QBCH_lib.core;
+using QBCH_lib.qcb_xml.v3_0.qcb_request;
+using System;
 using System.Security.Cryptography.X509Certificates;
-using QBCH_lib.core;
-using QBCH_lib.qcb_xml.v2_0.qcb_put;
-using QBCH_lib.qcb_xml.v2_0.qcb_request;
 
 namespace QBCH_lib.domain.entities;
 
@@ -43,9 +42,12 @@ public class ClentRequest : Entity
     /// <summary>
     /// xml запроса
     /// </summary>
-    public ЗапросСведений? Request { get; private set; }
+    public object? RequestPayload { get; private set; }
 
-    public ПредставлениеСведенийОПлатежах? PutRequest { get; private set; }
+    /// <summary>
+    /// xml запроса v3.0
+    /// </summary>
+    public ЗапросСведений? Request => RequestPayload as ЗапросСведений;
 
     /// <summary>
     /// Конструктор
@@ -90,16 +92,16 @@ public class ClentRequest : Entity
     /// <param name="request">Запрос</param>
     public void SetRequest(ЗапросСведений request)
     {
-        Request ??= request;
+        RequestPayload ??= request;
     }
 
     /// <summary>
-    /// Уставновить запрос
+    /// Установить десериализованную модель запроса без привязки к версии.
     /// </summary>
     /// <param name="request">Запрос</param>
-    public void SetRequestDlPut(ПредставлениеСведенийОПлатежах request)
+    public void SetRequest(object request)
     {
-        PutRequest ??= request;
+        RequestPayload ??= request;
     }
 
     /// <summary>

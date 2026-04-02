@@ -1,16 +1,15 @@
-﻿using System.Diagnostics.CodeAnalysis;
+﻿using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using QBCH_lib.CommonTypes.Api;
+using QBCH_lib.core;
+using QBCH_lib.Services.Interfaces;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Schema;
 using System.Xml.Serialization;
-using Microsoft.Extensions.Caching.Memory;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using QBCH_lib.CommonTypes.Api;
-using QBCH_lib.core;
-using QBCH_lib.qcb_xml.v1_3.Enums;
-using QBCH_lib.Services.Interfaces;
 using XmlService_lib.Services.Interfaces;
 
 namespace XmlService_lib.Services.Implementations
@@ -251,7 +250,7 @@ namespace XmlService_lib.Services.Implementations
                     {
                         Error = error,
                         ErrorCode = 9,
-                        Ticket = _ticketService.CreateResult(ResultType.Error, "9", $"Запрос не соответствует схеме:\r\n{error}")
+                        Ticket = _ticketService.CreateErrorReceipt("9", $"Запрос не соответствует схеме:\r\n{error}")
                     };
                 });
                 return xsdError;
@@ -262,7 +261,7 @@ namespace XmlService_lib.Services.Implementations
                 {
                     Error = $"Запрос не соответствует схеме:\r\n{ex.Message}",
                     ErrorMessage = ex.Message,
-                    Ticket = _ticketService.CreateResult(ResultType.Error, "9", $"Запрос не соответствует схеме:\r\n{ex.Message}")
+                    Ticket = _ticketService.CreateErrorReceipt("9", $"Запрос не соответствует схеме:\r\n{ex.Message}")
                 };
             }
         }
@@ -333,7 +332,7 @@ namespace XmlService_lib.Services.Implementations
                     {
                         Error = error,
                         ErrorCode = 9,
-                        Ticket = _ticketService.CreateResult(ResultType.Error, "9", $"Запрос не соответствует схеме:\r\n{error}")
+                        Ticket = _ticketService.CreateErrorReceipt("9", $"Запрос не соответствует схеме:\r\n{error}")
                     };
                 });
                 result = xsdError;
@@ -344,7 +343,7 @@ namespace XmlService_lib.Services.Implementations
                 {
                     Error = $"Запрос не соответствует схеме:\r\n{ex.Message}",
                     ErrorMessage = ex.Message,
-                    Ticket = _ticketService.CreateResult(ResultType.Error, "9", $"Запрос не соответствует схеме:\r\n{ex.Message}")
+                    Ticket = _ticketService.CreateErrorReceipt("9", $"Запрос не соответствует схеме:\r\n{ex.Message}")
                 };
             }
 
@@ -368,7 +367,7 @@ namespace XmlService_lib.Services.Implementations
                     {
                         Error = error,
                         ErrorCode = 9,
-                        Ticket = _ticketService.CreateResult(ResultType.Error, "9", $"Запрос не соответствует схеме: {error}")
+                        Ticket = _ticketService.CreateErrorReceipt("9", $"Запрос не соответствует схеме: {error}")
                     };
                 });
                 return xsdError is not null ? Result.Failure(new QBCH_lib.core.Error(9, $"Запрос не соответствует схеме: {xsdError.Error}")) : Result.Success();

@@ -1,58 +1,78 @@
-﻿using System.Text.Json;
-using Application_lib;
-using Asp.Versioning;
+﻿using Asp.Versioning;
+using Cache_lib.Interfaces;
+using CertManagement.Services.Interfaces;
 using Confluent.Kafka;
-using Domain.QBCHModels.aggregate;
-using Domain.QBCHModels.qcb_xml.v2_0.Enums;
+using Crypto_lib.Model;
+using Crypto_lib.Service;
+using KafkaService_lib.Services.Interfaces;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
-using QBCH_api.QBCHProcessing.CreateAndValidation.DlRequestValidationMediatr;
-using QBCH_api.QBCHProcessing.ResponseDataCollect.DlrequestProcessing;
-using QBCH_api.QBCHProcessing.StoreProcessingData.Event;
+using Microsoft.Extensions.Options;
+using QBCH_api.Configuration;
+using QBCH_api.QBCHProcessing.CreateAndValidation.Command;
+using QBCH_api.QBCHProcessing.Processing.Command;
+using QBCH_api.QBCHProcessing.StoreProcessingData.Commands;
+using QBCH_api.Services.Interfaces;
+using Qbch_db_lib.Services.Interfaces;
+using QBCH_lib.CommonTypes.Api;
+using QBCH_lib.domain.aggregate;
+using QBCH_lib.qcb_xml.v3_0.qcb_put;
+using QBCH_lib.Services.Interfaces;
+using QBCHService_lib.Services.Interfaces;
+using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
+using XmlService_lib.Services.Interfaces;
 
 namespace QBCH_api.Controllers
 {
-    /// <summary>
-    /// 
-    /// </summary>
-    /// <param name="mediator"></param>
-    /// <param name="cryptoService"></param>
-    /// <param name="logger"></param>
-    /// <param name="xmlService"></param>
-    /// <param name="config"></param>
-    /// <param name="redisСache"></param>
-    /// <param name="kafka"></param>
-    /// <param name="ticketService"></param>
-    /// <param name="repository"></param>
-    /// <param name="certManagement"></param>
-    [ApiVersion("2.0")]
+    [ApiVersion("3.0")]
     [Route("v{version:apiVersion}")]
     [ApiController]
     public class QBCHIIController(IMediator mediator,
-                                  ICryptoAdapter cryptoService, 
+                                  ICryptoService cryptoService,
                                   ILogger<QBCHIIController> logger,
                                   IXmlService xmlService,
+                                  IValidationService validationService,
+                                  IQBCHService qBCHService,
                                   IConfiguration config,
-                                  IRedisAdapter redisСache,
-                                  IKafkaAdapter kafka,
+                                  IHttpClientFactory httpClientFactory,
+                                  IBKIRequisitsHandler bKIRequisits,
+                                  ICacheService redisСache,
+                                  ITransformer transformer,
+                                  IKafkaService kafka,
                                   ITicketService ticketService,
-                                  IDBAdapter repository,
-                                  ICertManagementService certManagement) : ControllerBase
+                                  IRepository repository,
+                                   ICertManagementService certManagement,
+                                  IOptions<ApiV3ContractOptions> contractOptions,
+                                  ApiV3ContractRules contractRules) : ControllerBase
     {
+        private const string DlRequestService = "dlrequest";
+        private const string DlAnswerService = "dlanswer";
+        private const string DlPutService = "dlput";
+        private const string DlPutAnswerService = "dlputanswer";
+
         private readonly IMediator _mediator = mediator;
-        private readonly ICryptoAdapter _cryptoService = cryptoService;
+        private readonly ICryptoService _cryptoService = cryptoService;
         private readonly ILogger<QBCHIIController> _logger = logger;
         private readonly IXmlService _xmlService = xmlService;
+        private readonly IValidationService _validationService = validationService;
+        private readonly IQBCHService _qBCHService = qBCHService;
         private readonly IConfiguration _config = config;
-        private readonly IRedisAdapter _redisCache = redisСache;
-        private readonly IKafkaAdapter _kafka = kafka;
+        private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+        private readonly IBKIRequisitsHandler _bKIRequisits = bKIRequisits;
+        private readonly ICacheService _redisCache = redisСache;
+        private readonly ITransformer _transformer = transformer;
+        private readonly IKafkaService _kafka = kafka;
         private readonly ITicketService _ticketService = ticketService;
-        private readonly IDBAdapter _repository = repository;
-        private readonly string? _ourBureauPSRN = config.GetValue<string>("Bureau:PSRN");
+        private readonly IRepository _repository = repository;
+        private readonly ICertManagementService _certManagement = certManagement;
+        private readonly ApiV3ContractOptions _contractOptions = contractOptions.Value;
+        private readonly ApiV3ContractRules _contractRules = contractRules;
+        private readonly string? OurBureauPSRN = config.GetValue<string>("Bureau:PSRN");
         private readonly string? _kakfaTopic = config.GetValue<string>("KafkaService:Topic");
 
         /// <summary>
-        /// Запрос сведений о среднемесячных платежах Субъекта.
+        /// Запрос сведений о CCП/самозапрет/антифрод
         /// </summary>
         /// <remarks>
         /// 
@@ -64,20 +84,20 @@ namespace QBCH_api.Controllers
         /// <response code="202">Результат запроса содержит квитанцию с идентификатором ответа.</response>
         /// <response code="400">Результат запроса содержит квитанцию с информацией об ошибке.</response>
         [HttpPost("dlrequest")]
-        [MapToApiVersion("2.0")]
-        public async Task<IActionResult> DlRequest_v_2(ApiVersion apiVersion)
+        [MapToApiVersion("3.0")]
+        public async Task<IActionResult> DlRequest(ApiVersion apiVersion)
         {
             // Считем время затраченное на проверки.        
             var RequestTime = DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff");
 
             // Создание и валидация объекта transaction
-            var transaction = await _mediator.Send(new DlRequestAggregateMediatrInput(apiVersion, Request));
+            var transaction = await _mediator.Send(new CreateToValidateCommand(apiVersion, Request));
 
             _logger.LogDebug("{guid} Request: {dt}", transaction.Id, RequestTime);
 
             if (transaction.ProcessingErrors.Count != 0)
             {
-                var errorTicket = _ticketService.CreateResultV2Error(transaction.ProcessingErrors.First());
+                var errorTicket = _ticketService.CreateErrorReceipt(transaction.ProcessingErrors.First());
                 var errorResult = _xmlService.SerializeAsByte(errorTicket);
                 var signedResp = _cryptoService.SignMsg(errorResult);
 
@@ -86,6 +106,20 @@ namespace QBCH_api.Controllers
                               singnedResponse: signedResp);
 
                 // Отправка события завершения обработки transaction в Kafka и Redis
+                await _mediator.Publish(new QBCHProcessingComplete(transaction));
+
+                return BadRequest(new MemoryStream(transaction.Response.SignedTicket!));
+            }
+
+            var dlRequestItemsCount = transaction.ClentRequest.Request?.Запрос?.Count ?? 0;
+            if (!_contractRules.IsDlRequestBatchSizeValid(dlRequestItemsCount))
+            {
+                var message = $"Превышен лимит пакетного запроса: {dlRequestItemsCount}. Максимум: {_contractOptions.MaxDlRequestBatchSize}";
+                var errorTicket = _ticketService.CreateErrorReceipt("3", message);
+                var errorResult = _xmlService.SerializeAsByte(errorTicket);
+                var signedResp = _cryptoService.SignMsg(errorResult);
+
+                transaction.Complete(response: errorResult, singnedResponse: signedResp);
                 await _mediator.Publish(new QBCHProcessingComplete(transaction));
 
                 return BadRequest(new MemoryStream(transaction.Response.SignedTicket!));
@@ -105,8 +139,7 @@ namespace QBCH_api.Controllers
             catch (Exception ex)
             {
                 _logger.LogCritical(ex, "Ошибка записи уникальнго requestId в redis");
-            }
-            ;
+            };
 
             transaction.TimeElapsedForValidation.Stop();
             _logger.LogDebug("{guid} Validation time elapsed: {elapsed}", transaction.Id, transaction.TimeElapsedForValidation.Elapsed);
@@ -117,12 +150,12 @@ namespace QBCH_api.Controllers
                 var processingResult =
                     await _mediator
                             .Send(
-                                new SendRequestsToQBCH(
+                                new QBCHProcessedStart(
                                     transaction,
                                     _config.GetValue<int>("APIConfiguration:QBCHResponseTimeoutMs"),
                                     _config.GetValue<int>("APIConfiguration:TicketTimeoutMs"),
                                     _config.GetValue<int>("APIConfiguration:ResponseTimeoutMs"),
-                                    _ourBureauPSRN
+                                    OurBureauPSRN
                                 )
                             );
 
@@ -167,7 +200,7 @@ namespace QBCH_api.Controllers
         }
 
         /// <summary>
-        /// получение сведений о среднемесячных платежах Субъекта по идентификатору ответа
+        /// получение сведений Субъекта по идентификатору ответа по идентификатору ответа
         /// </summary>
         /// <param name="id"></param>
         /// <returns></returns>
@@ -178,16 +211,16 @@ namespace QBCH_api.Controllers
         /// <response code="202">результат запроса содержит квитанцию с информацией об ошибке «Ответ не готов».</response>
         /// <response code="400">результат запроса содержит квитанцию с информацией об ошибке, кроме ошибки «Ответ не готов»</response>
         [HttpGet("dlanswer")]
-        [MapToApiVersion("2.0")]
-        public async Task<IActionResult> DlAnswer_v_2(string? id = null)
+        [MapToApiVersion("3.0")]
+        public async Task<IActionResult> DlAnswer(string? id = null)
         {
             var RequestTime = DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff");
             var guid = Guid.NewGuid().ToString();
             byte[]? signedResponse = null;
             byte[]? responseXml = null;
-            var serviceName = "dlanswer";
+            var serviceName = DlAnswerService;
             var certificate = Request.HttpContext.Connection.ClientCertificate;
-            var IpAddress = $"{Request.HttpContext.Connection.LocalIpAddress?.ToString()}|{Request.HttpContext.Connection.RemoteIpAddress?.ToString()}";
+            var IpAddress = Request.HttpContext.Connection.RemoteIpAddress;
 
             try
             {
@@ -210,23 +243,21 @@ namespace QBCH_api.Controllers
                         _logger.LogError("Запрос не содержит обязательных параметров: id");
                         await _redisCache.AddHash(serviceName, guid, "error_code", "3");
                         await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не содержит обязательных параметров: id");
-                        responseXml = _xmlService.SerializeAsByte(_ticketService.CreateResultv2(ResponseType.Error, "3", "Запрос не содержит обязательных параметров: id"));
-                        signedResponse = _cryptoService.SignMsg(responseXml);
-                        return BadRequest(new MemoryStream(signedResponse));
+
+                        return BuildSignedErrorResult("3", "Запрос не содержит обязательных параметров: id", out responseXml, out signedResponse);
                     }
 
                     await _redisCache.AddHash(serviceName, guid, "response_guid", id);
 
                     /* Проверка прав доступа 
                      */
-                    if (!await _repository.IsPermissionGrantedv2(certificate?.Thumbprint, "dlrequest"))
+                    if (!await _validationService.ValidateRules(certificate?.Thumbprint, DlRequestService))
                     {
                         _logger.LogError("Запрос не доступен для абонента");
                         await _redisCache.AddHash(serviceName, guid, "error_code", "22");
                         await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не доступен для абонента");
-                        responseXml = _xmlService.SerializeAsByte(_ticketService.CreateResultv2(ResponseType.Error, "22", "Запрос не доступен для абонента"));
-                        signedResponse = _cryptoService.SignMsg(responseXml);
-                        return BadRequest(new MemoryStream(signedResponse));
+
+                        return BuildSignedErrorResult("22", "Запрос не доступен для абонента", out responseXml, out signedResponse);
                     }
 
                     /*  1. Метод передачи запроса  не соответствует требуемому.
@@ -237,17 +268,16 @@ namespace QBCH_api.Controllers
                         _logger.LogError("Метод передачи запроса не соответствует ожидаемому");
                         await _redisCache.AddHash(serviceName, guid, "error_code", "1");
                         await _redisCache.AddHash(serviceName, guid, "error_message", "Метод передачи запроса не соответствует ожидаемому");
-                        responseXml = _xmlService.SerializeAsByte(_ticketService.CreateResultv2(ResponseType.Error, "1", "Метод передачи запроса не соответствует ожидаемому"));
-                        signedResponse = _cryptoService.SignMsg(responseXml);
-                        return BadRequest(new MemoryStream(signedResponse));
+
+                        return BuildSignedErrorResult("1", "Метод передачи запроса не соответствует ожидаемому", out responseXml, out signedResponse);
                     }
 
                     /* Проверка сертификата в запросе */
-                    if (!_cryptoService.ValidateCertificate(certificate, out var CryptoServiceResult))
+                    if (!_validationService.ValidateCertificate(certificate, out var CryptoServiceResult))
                     {
                         await _redisCache.AddHash(serviceName, guid, "error_code", CryptoServiceResult.ErrorCode.ToString());
                         await _redisCache.AddHash(serviceName, guid, "error_message", CryptoServiceResult.Error ?? "-");
-                        responseXml = _xmlService.SerializeAsByte(CryptoServiceResult.Ticket_v2);
+                        responseXml = _xmlService.SerializeAsByte(CryptoServiceResult.Ticket);
                         signedResponse = _cryptoService.SignMsg(responseXml);
                         return BadRequest(new MemoryStream(signedResponse));
                     }
@@ -256,21 +286,27 @@ namespace QBCH_api.Controllers
                      * /dlanswer или /dlputanswer указан
                      * идентификатор, который не выдавался абоненту
                      */
-                    if (!await _redisCache.KeyExists(["dlrequest", id]))
+                    if (!await _redisCache.KeyExists([DlRequestService, id]))
                     {
                         _logger.LogError("Указан некорректный идентификатор ответа");
                         await _redisCache.AddHash(serviceName, guid, "error_code", "16");
                         await _redisCache.AddHash(serviceName, guid, "error_message", "Указан некорректный идентификатор ответа");
-                        responseXml = _xmlService.SerializeAsByte(_ticketService.CreateResultv2(ResponseType.Error, "16", $"Указан некорректный идентификатор ответа"));
-                        signedResponse = _cryptoService.SignMsg(responseXml);
-                        return BadRequest(new MemoryStream(signedResponse));
+
+                        return BuildSignedErrorResult("16", "Указан некорректный идентификатор ответа", out responseXml, out signedResponse);
                     }
 
                     // Время окончания валидации
                     await _redisCache.AddHash(serviceName, guid, "validation_date_time", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
 
+                    if (await IsRepeatAnswerRequestTooEarly(DlAnswerService, id))
+                    {
+                        await _redisCache.AddHash(serviceName, guid, "error_code", "12");
+                        await _redisCache.AddHash(serviceName, guid, "error_message", $"Повторный запрос допустим не ранее чем через {_contractOptions.MinAnswerPollingIntervalSeconds} секунду(ы)");
+                        return BuildSignedErrorResult("12", $"Повторный запрос допустим не ранее чем через {_contractOptions.MinAnswerPollingIntervalSeconds} секунду(ы)", out responseXml, out signedResponse);
+                    }
+
                     // Пока задача не готова возвращаем статус 12 - Ответ не готов.
-                    if (_redisCache.TryGetHash("dlrequest", id, "qbch_tasks_aggregate_xml", out responseXml))
+                    if (_redisCache.TryGetHash(DlRequestService, id, "qbch_tasks_aggregate_xml", out responseXml))
                     {
                         signedResponse = _cryptoService.SignMsg(responseXml);
                         return File(signedResponse, "application/octet-stream");
@@ -279,9 +315,8 @@ namespace QBCH_api.Controllers
                     {
                         await _redisCache.AddHash(serviceName, guid, "error_code", "12");
                         await _redisCache.AddHash(serviceName, guid, "error_message", "Ответ не готов");
-                        responseXml = _xmlService.SerializeAsByte(_ticketService.CreateResultv2(ResponseType.Error, "12", "Ответ не готов"));
-                        signedResponse = _cryptoService.SignMsg(responseXml);
-                        return Accepted(new MemoryStream(signedResponse));
+
+                        return BuildSignedErrorResult("12", "Ответ не готов", out responseXml, out signedResponse);
                     }
                 }
                 catch (Exception ex)
@@ -331,6 +366,673 @@ namespace QBCH_api.Controllers
 
                 _logger.LogCritical(ex, "Возникла критическая ошибка");
                 return StatusCode(500);
+            }
+        }
+
+        /// <summary>
+        /// Передача от БКИ данных, необходимых для формирования и предоставления пользователям кредитных историй сведений о среднемесячных платежах Субъекта.
+        /// </summary>
+        /// <returns>Результат запроса – информация о результатах загрузки данных в базу данных КБКИ</returns>
+        /// <response code="200">Результат запроса содержит информацию о результатах загрузки данных в базу данных КБКИ</response>
+        /// <response code="202">Результат запроса содержит квитанцию с идентификатором ответа</response>
+        /// <response code="400">Результат запроса содержит квитанцию с информацией об ошибке</response>
+        [MapToApiVersion("3.0")]
+        [HttpPost("dlput")]
+        public async Task<IActionResult> DlPut_v_2(ApiVersion apiVersion)
+        {
+            byte[]? signedResponse = null;
+            byte[]? responseXml = null;
+            var serviceName = DlPutService;
+            var guid = Guid.NewGuid().ToString();
+            var certificate = Request.HttpContext.Connection.ClientCertificate;
+
+            try
+            {
+                using var ms = new MemoryStream();
+                await Request.Body.CopyToAsync(ms);
+
+                if (ms.Length == 0)
+                {
+                    responseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("2", "Запрос не содержит данных"));
+                    signedResponse = _cryptoService.SignMsg(responseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                if (!_validationService.ValidateMsg(ms.ToArray(), certificate, out var cryptoServiceResult))
+                {
+                    responseXml = _xmlService.SerializeAsByte(cryptoServiceResult.Ticket);
+                    signedResponse = _cryptoService.SignMsg(responseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                if (!_validationService.ValidateXml(new MemoryStream(cryptoServiceResult.Body), serviceName, apiVersion, out var xsdValidation))
+                {
+                    responseXml = _xmlService.SerializeAsByte(xsdValidation.Ticket);
+                    signedResponse = _cryptoService.SignMsg(responseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                var request = _xmlService.Deserialize<ПредставлениеСведений>(cryptoServiceResult.Body);
+                if (request is null)
+                {
+                    responseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("9", "Запрос не соответствует схеме"));
+                    signedResponse = _cryptoService.SignMsg(responseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                var entitiesCount = request.Сведения?.Count ?? 0;
+                if (!_contractRules.IsDlPutEntitiesCountValid(entitiesCount))
+                {
+                    responseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("3", $"Превышен лимит сущностей: {entitiesCount}. Максимум: {_contractOptions.MaxDlPutEntities}"));
+                    signedResponse = _cryptoService.SignMsg(responseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                await _redisCache.AddHash(serviceName, guid, "request", cryptoServiceResult.Body);
+                await _redisCache.AddHash(serviceName, guid, "RequestId", request.ИдентификаторЗапроса ?? string.Empty);
+                await _redisCache.TrySetKeyExpiration(serviceName, guid, _contractOptions.ResponseRetentionHours * 60L);
+
+                responseXml = _xmlService.SerializeAsByte(_ticketService.CreateReceiptWithAnswerId(request.ИдентификаторЗапроса, guid, request.ДатаЗапроса));
+                signedResponse = _cryptoService.SignMsg(responseXml);
+                return Accepted(new MemoryStream(signedResponse));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "Возникла критическая ошибка");
+                return StatusCode(500);
+            }
+        }
+
+        /// <summary>
+        /// Получение информации о результатах загрузки данных
+        /// </summary>
+        /// <param name="version"></param>
+        /// <param name="id">Значение идентификатора ответа, содержащегося в квитанции, полученной при передаче данных о среднемесячных платежах Субъекта</param>
+        /// <returns>Информация о результатах загрузки данных в базу данных КБКИ</returns>
+        /// <response code="200">Результат запроса содержит информацию о результатах загрузки данных в базу данных КБКИ</response>
+        /// <response code="202">Результат запроса содержит квитанцию с информацией об ошибке «Ответ не готов»</response>
+        /// <response code="400">Результат запроса содержит квитанцию с информацией об ошибке, кроме ошибки «Ответ не готов»</response>
+        /// <remarks>
+        /// В случае получения ошибки «Ответ не готов» абонент должен повторить запрос не ранее, чем через 1 секунду.
+        /// </remarks>
+        [HttpGet("dlputanswer")]
+        [MapToApiVersion("3.0")]
+        public async Task<IActionResult> DlPutAnswer(ApiVersion version, string? id = null)
+        {
+            var RequestTime = DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff");
+            byte[]? signedResponse = null;
+            byte[]? ResponseXml = null;
+            var serviceName = DlPutAnswerService;
+            var guid = Guid.NewGuid().ToString();
+            var IpAddress = Request.HttpContext.Connection.RemoteIpAddress;
+            var certificate = Request.HttpContext.Connection.ClientCertificate;
+
+            try
+            {
+                await _redisCache.AddHash(serviceName, guid, "RequestTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                if (IpAddress != null)
+                    await _redisCache.AddHash(serviceName, guid, "IpAddress", IpAddress.ToString());
+
+                await _redisCache.AddHash(serviceName, guid, "Thumbprint", certificate?.Thumbprint ?? "-");
+
+                try
+                {
+
+                    /*  3. Запрос не содержит обязательных параметров
+                     *  Проверяется наличие обязательных параметров
+                     */
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        _logger.LogError("Запрос не содержит обязательных параметров: id");
+
+                        return BuildSignedErrorResult("3", "Запрос не содержит обязательных параметров: id", out ResponseXml, out signedResponse);
+                    }
+
+                    await _redisCache.AddHash(serviceName, guid, "guid", id);
+
+                    /* Проверка прав доступа */
+                    if (!(await _validationService.ValidateRules(certificate?.Thumbprint, DlPutService)))
+                    {
+                        _logger.LogError("Запрос не доступен для абонента");
+                        await _redisCache.AddHash(serviceName, guid, "error_code", "22");
+                        await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не доступен для абонента");
+                        await _redisCache.AddHash(serviceName, guid, "Thumbprint", certificate?.Thumbprint ?? "-");
+
+                        return BuildSignedErrorResult("22", "Запрос не доступен для абонента", out ResponseXml, out signedResponse);
+                    }
+
+                    /*  1. Метод передачи запроса  не соответствует требуемому.
+                     *  Проверяется тип метода который пришел в api 
+                     */
+                    if (Request.Method != "GET")
+                    {
+                        _logger.LogError("Метод передачи запроса не соответствует ожидаемому");
+                        await _redisCache.AddHash(serviceName, guid, "error_code", "1");
+                        await _redisCache.AddHash(serviceName, guid, "error_message", "Метод передачи запроса не соответствует ожидаемому");
+                        await _redisCache.AddHash(serviceName, guid, "Thumbprint", certificate?.Thumbprint ?? "-");
+
+                        return BuildSignedErrorResult("1", "Метод передачи запроса не соответствует ожидаемому", out ResponseXml, out signedResponse);
+                    }
+
+                    /* Проверка сертификата в запросе
+                     */
+                    if (!_validationService.ValidateCertificate(certificate, out var CryptoServiceResult))
+                    {
+                        await _redisCache.AddHash(serviceName, guid, "error_code", CryptoServiceResult.ErrorCode.ToString());
+                        await _redisCache.AddHash(serviceName, guid, "error_message", CryptoServiceResult.Error ?? "-");
+                        await _redisCache.AddHash(serviceName, guid, "Thumbprint", certificate?.Thumbprint ?? "-");
+                        ResponseXml = _xmlService.SerializeAsByte(CryptoServiceResult.Ticket);
+                        signedResponse = _cryptoService.SignMsg(ResponseXml);
+                        return BadRequest(new MemoryStream(_cryptoService.SignMsg(ResponseXml)));
+                    }
+
+                    /* 16. В качестве значения параметра id запроса
+                     * /dlanswer или /dlputanswer указан
+                     * идентификатор, который не выдавался абоненту
+                     */
+                    if (!await _redisCache.KeyExists([DlPutService, id]))
+                    {
+                        _logger.LogError("Указан некорректный идентификатор ответа");
+                        await _redisCache.AddHash(serviceName, guid, "error_code", "16");
+                        await _redisCache.AddHash(serviceName, guid, "error_message", "Указан некорректный идентификатор ответа");
+                        await _redisCache.AddHash(serviceName, guid, "Thumbprint", certificate?.Thumbprint ?? "-");
+                        ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("16", "Указан некорректный идентификатор ответа"));
+                        signedResponse = _cryptoService.SignMsg(ResponseXml);
+                        return BadRequest(new MemoryStream(signedResponse));
+                    }
+
+                    if (await IsRepeatAnswerRequestTooEarly(DlPutService, id))
+                    {
+                        await _redisCache.AddHash(serviceName, guid, "error_code", "12");
+                        await _redisCache.AddHash(serviceName, guid, "error_message", $"Повторный запрос допустим не ранее чем через {_contractOptions.MinAnswerPollingIntervalSeconds} секунду(ы)");
+                        return BuildSignedErrorResult("12", $"Повторный запрос допустим не ранее чем через {_contractOptions.MinAnswerPollingIntervalSeconds} секунду(ы)", out ResponseXml, out signedResponse);
+                    }
+
+                    // Пока задача не готова возвращаем статус 12 - Ответ не готов.
+                    if (_redisCache.TryGetHash(DlPutService, id, "response", out ResponseXml))
+                    {
+                        await _redisCache.AddHash(serviceName, guid, "Thumbprint", certificate?.Thumbprint ?? "-");
+                        signedResponse = _cryptoService.SignMsg(ResponseXml);
+                        return File(signedResponse, "application/octet-stream");
+                    }
+                    else
+                    {
+                        await _redisCache.AddHash(serviceName, guid, "Thumbprint", certificate?.Thumbprint ?? "-");
+                        await _redisCache.AddHash(serviceName, guid, "error_code", "12");
+
+                        return BuildSignedErrorResult("12", "Ответ не готов", out ResponseXml, out signedResponse);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogCritical(ex, "Возникла критическая ошибка");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", 500.ToString());
+                    await _redisCache.AddHash(serviceName, guid, "error_message", ex.ToString());
+
+                    return StatusCode(500);
+                }
+                finally
+                {
+                    if (signedResponse is not null)
+                        await _redisCache.AddHash(serviceName, guid, "SignedResponse", signedResponse);
+
+                    if (ResponseXml is not null)
+                        await _redisCache.AddHash(serviceName, guid, "ResponseXml", ResponseXml);
+
+                    /* Если время окончания валидации не существует, значит провекра не пройдена и результат таски возвращен не будет
+                     */
+                    if (!(await _redisCache.HashFieldExists(serviceName, guid, "ValidationTime")))
+                        await _redisCache.AddHash(serviceName, guid, "ValidationTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                    await _redisCache.AddHash(serviceName, guid, "ResponseTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                    // Выгрузка в кафку
+                    await _kafka.Produce(new Message<Null, string> { Value = $"QBCH:{serviceName}:{guid}" }, _kakfaTopic);
+                }
+            }
+            catch (Exception ex)
+            {
+                var message = JsonSerializer.Serialize(
+                       new
+                       {
+                           ServiceName = serviceName,
+                           guid,
+                           Id = id,
+                           IpAddress = IpAddress?.ToString(),
+                           certificate?.Thumbprint,
+                           RequestTime,
+                           ResponseTime = DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"),
+                           ex.Message
+                       });
+
+                // Выгрузка в кафку
+                await _kafka.Produce(new Message<Null, string> { Value = message }, _kakfaTopic);
+
+                _logger.LogCritical(ex, "Возникла критическая ошибка");
+                return StatusCode(500);
+            }
+        }
+
+        /// <summary>
+        /// Добавление нового сертификата абонента
+        /// </summary>
+        /// <returns></returns>
+        /// <response code="200">Квитанция содержит информацию об успешной обработке запроса</response>
+        /// <response code="400">Квитанция содержит информацию об ошибке</response>
+        [HttpPost("certadd")]
+        [MapToApiVersion("3.0")]
+        public async Task<IActionResult> CertAdd([FromForm] CertForm form)
+        {
+            throw new NotImplementedException();
+
+            byte[]? signedResponse = null;
+            byte[]? ResponseXml = null;
+            var guid = Guid.NewGuid().ToString();
+            var serviceName = "certadd";
+
+            await _redisCache.AddHash(serviceName, guid, "RequestTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+            var ip = Request.HttpContext.Connection.RemoteIpAddress;
+            if (ip != null)
+                await _redisCache.AddHash(serviceName, guid, "IpAddress", ip.ToString());
+
+            try
+            {
+                /* Проверка прав доступа 
+                 */
+                var requestCertificate = Request.HttpContext.Connection.ClientCertificate;
+                await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                if (!(await _validationService.ValidateRules(requestCertificate?.Thumbprint, serviceName)))
+                {
+                    _logger.LogError("Запрос не доступен для абонента");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "22");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не доступен для абонента");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("22", "Запрос не доступен для абонента"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                // Проверка наличия идентифкатора
+                if (string.IsNullOrWhiteSpace(form.id))
+                {
+                    _logger.LogError("Запрос не содержит обязательных параметров: id");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "3");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не содержит обязательных параметров: id");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("3", "Запрос не содержит обязательных параметров: id"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                await _redisCache.AddHash(serviceName, guid, "RequestId", form.id);
+
+                // Проверка наличия sign
+                if (form.sign is null)
+                {
+                    _logger.LogError("Запрос не содержит обязательных параметров: sign");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "3");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не содержит обязательных параметров: sign");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                     ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("3", "Запрос не содержит обязательных параметров: sign"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                // Проверка наличия cert
+                if (form.cert is null)
+                {
+                    _logger.LogError("Запрос не содержит обязательных параметров: cert");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "3");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не содержит обязательных параметров: cert");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("3", "Запрос не содержит обязательных параметров: cert"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                /*  1. Метод передачи запроса  не соответствует требуемому.
+                 *  Проверяется тип метода который пришел в api 
+                 */
+                if (Request.Method != "POST")
+                {
+                    _logger.LogError("Метод передачи запроса не соответствует ожидаемому");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "1");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Метод передачи запроса не соответствует ожидаемому");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("1", "Метод передачи запроса не соответствует ожидаемому"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                var sign = new MemoryStream();
+                var cert = new MemoryStream();
+
+                await form.cert.CopyToAsync(cert);
+                await form.sign.CopyToAsync(sign);
+
+                await _redisCache.AddHash(serviceName, guid, "Cert", cert.ToArray());
+                await _redisCache.AddHash(serviceName, guid, "Sign", sign.ToArray());
+
+                try
+                {
+                    X509Certificate2 certifcate = new(cert.ToArray());
+                    await _redisCache.AddHash(serviceName, guid, "FormCertThumbprint", certifcate.Thumbprint);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "{serviceName} не удалось считать thumbprint", serviceName);
+                }
+
+                // Проверка сертификата в запросе
+                if (!_validationService.ValidateMsg(cert.ToArray(), requestCertificate, out var CryptoServiceResult, sign.ToArray()))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", CryptoServiceResult.ErrorCode.ToString());
+                    await _redisCache.AddHash(serviceName, guid, "error_message", CryptoServiceResult.Error ?? "-");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(CryptoServiceResult.Ticket);
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(_cryptoService.SignMsg(ResponseXml)));
+                }
+
+                /* 11. Идентификатор запроса не уникален
+                 * Идентификатор запроса ранее передавался
+                 * данным абонентом в составе другого запроса
+                 * такого же типа
+                 */
+                if (!_validationService.IsUniqueRequestId(form.id, serviceName, CryptoServiceResult.RequestOGRN!, out var uniqueValidationResult))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", uniqueValidationResult.ErrorCode.ToString());
+                    await _redisCache.AddHash(serviceName, guid, "error_message", uniqueValidationResult.Error ?? "-");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(uniqueValidationResult.Ticket);
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                // Дата не может быть пустой т.к. явялется обязательной по xsd, так же как id запроса и инн огрн в реквизитах.
+                await _redisCache.AddUniqueRequestId(serviceName, form.id, CryptoServiceResult.RequestOGRN!, DateTime.Now);
+
+                // Проверка наличия записи о сертификате с таким thumbprint в БД
+                if (await _validationService.IsCertExists(cert.ToArray()))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "99");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Такой сертификат уже существует.");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("99", "Такой сертификат уже существует."));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(_cryptoService.SignMsg(ResponseXml)));
+                }
+
+                await _redisCache.AddHash(serviceName, guid, "ValidationTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                if (await _certManagement.AddCertificate(cert.ToArray(), CryptoServiceResult?.RequestOGRN, guid))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateSuccessReceipt(form.id, DateTime.Today));
+                    await _redisCache.AddHash(serviceName, guid, "response", _xmlService.SerializeAsByte(ResponseXml));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return File(signedResponse, "application/octet-stream");
+                }
+                else
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "99");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Не удалось добавить сертификат.");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("99", "Не удалось добавить сертификат."));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(_cryptoService.SignMsg(ResponseXml)));
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "Возникла критическая ошибка");
+                await _redisCache.AddHash(serviceName, guid, "error_code", 500.ToString());
+                await _redisCache.AddHash(serviceName, guid, "error_message", ex.ToString());
+                return StatusCode(500);
+            }
+            finally
+            {
+                if (signedResponse is not null)
+                    await _redisCache.AddHash(serviceName, guid, "SignedResponse", signedResponse);
+
+                if (ResponseXml is not null)
+                    await _redisCache.AddHash(serviceName, guid, "ResponseXml", ResponseXml);
+
+                // Если время окончания валидации не существует, значит провекра не пройдена и результат таски возвращен не будет
+                await _redisCache.AddHash(serviceName, guid, "ValidationTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                // Время ответа
+                await _redisCache.AddHash(serviceName, guid, "ResponseTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                // Выгрузка в кафку
+                await _kafka.Produce(new Message<Null, string> { Value = $"QBCH:{serviceName}:{guid}" }, _kakfaTopic);
+            }
+        }
+
+        private async Task<bool> IsRepeatAnswerRequestTooEarly(string sourceServiceName, string answerId)
+        {
+            const string RetryTimeFieldName = "last_poll_unix_ms";
+            var key = $"{answerId}:polling";
+            var now = DateTimeOffset.UtcNow;
+
+            if (_redisCache.TryGetHash(sourceServiceName, key, RetryTimeFieldName, out var prevBytes) &&
+                long.TryParse(System.Text.Encoding.UTF8.GetString(prevBytes), out var prevUnixMs))
+            {
+                var prev = DateTimeOffset.FromUnixTimeMilliseconds(prevUnixMs);
+                if (!_contractRules.IsAnswerRetryAllowed(prev, now))
+                    return true;
+            }
+
+            await _redisCache.AddHash(sourceServiceName, key, RetryTimeFieldName, now.ToUnixTimeMilliseconds().ToString());
+            await _redisCache.TrySetKeyExpiration(sourceServiceName, key, _contractOptions.ResponseRetentionHours * 60L);
+            return false;
+        }
+        private IActionResult BuildSignedErrorResult(string errorCode, string message, out byte[] responseXml, out byte[] signedResponse)
+        {
+            responseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt(errorCode, message));
+            signedResponse = _cryptoService.SignMsg(responseXml);
+
+            return errorCode == "12"
+                ? Accepted(new MemoryStream(signedResponse))
+                : BadRequest(new MemoryStream(signedResponse));
+        }
+
+        /// <summary>
+        /// Отзыв сертификата абонента
+        /// </summary>
+        /// <returns></returns>
+        /// <exception cref="NotImplementedException"></exception>
+        /// <response code="200">Квитанция содержит информацию об успешной обработке запроса</response>
+        /// <response code="400">Квитанция содержит информацию об ошибке</response>
+        [HttpPost("certrevoke")]
+        [MapToApiVersion("3.0")]
+        public async Task<IActionResult> CertRevoke([FromForm] CertForm form)
+        {
+            throw new NotImplementedException();
+
+            byte[]? signedResponse = null;
+            byte[]? ResponseXml = null;
+            var guid = Guid.NewGuid().ToString();
+            var serviceName = "certrevoke";
+
+            await _redisCache.AddHash(serviceName, guid, "RequestTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+            var ip = Request.HttpContext.Connection.RemoteIpAddress;
+            if (ip != null)
+                await _redisCache.AddHash(serviceName, guid, "IpAddress", ip.ToString());
+
+            try
+            {
+                // Проверка прав доступа
+                var requestCertificate = Request.HttpContext.Connection.ClientCertificate;
+                await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                if (!(await _validationService.ValidateRules(requestCertificate?.Thumbprint, serviceName)))
+                {
+                    _logger.LogError("Запрос не доступен для абонента");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "22");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не доступен для абонента");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("22", "Запрос не доступен для абонента"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                // Проверка наличия идентифкатора
+                if (string.IsNullOrWhiteSpace(form.id))
+                {
+                    _logger.LogError("Запрос не содержит обязательных параметров: id");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "3");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не содержит обязательных параметров: id");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("3", "Запрос не содержит обязательных параметров: id"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+                await _redisCache.AddHash(serviceName, guid, "RequestId", form.id);
+
+                // Проверка наличия sign
+                if (form.sign is null)
+                {
+                    _logger.LogError("Запрос не содержит обязательных параметров: sign");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "3");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не содержит обязательных параметров: sign");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("3", "Запрос не содержит обязательных параметров: sign"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                // Проверка наличия cert
+                if (form.cert is null)
+                {
+                    _logger.LogError("Запрос не содержит обязательных параметров: cert");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "3");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Запрос не содержит обязательных параметров: cert");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("3", "Запрос не содержит обязательных параметров: cert"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                /*  1. Метод передачи запроса  не соответствует требуемому.
+                 *  Проверяется тип метода который пришел в api 
+                 */
+                if (Request.Method != "POST")
+                {
+                    _logger.LogError("Метод передачи запроса не соответствует ожидаемому");
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "1");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Метод передачи запроса не соответствует ожидаемому");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("1", "Метод передачи запроса не соответствует ожидаемому"));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                var sign = new MemoryStream();
+                var cert = new MemoryStream();
+
+                await form.cert.CopyToAsync(cert);
+                await form.sign.CopyToAsync(sign);
+
+                await _redisCache.AddHash(serviceName, guid, "Cert", cert.ToArray());
+                await _redisCache.AddHash(serviceName, guid, "Sign", sign.ToArray());
+
+                try
+                {
+                    X509Certificate2 certifcate = new(cert.ToArray());
+                    await _redisCache.AddHash(serviceName, guid, "FormCertThumbprint", certifcate.Thumbprint);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "{serviceName} не удалось считать thumbprint", serviceName);
+                }
+
+                // Проверка сертификата в запросе
+                if (!_validationService.ValidateMsg(cert.ToArray(), requestCertificate, out var CryptoServiceResult, sign.ToArray()))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", CryptoServiceResult.ErrorCode.ToString());
+                    await _redisCache.AddHash(serviceName, guid, "error_message", CryptoServiceResult.Error ?? "-");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(CryptoServiceResult.Ticket);
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(_cryptoService.SignMsg(ResponseXml)));
+                }
+
+                /* 11. Идентификатор запроса не уникален
+                 * Идентификатор запроса ранее передавался
+                 * данным абонентом в составе другого запроса
+                 * такого же типа
+                 */
+                if (!_validationService.IsUniqueRequestId(form.id, serviceName, CryptoServiceResult.RequestOGRN!, out var uniqueValidationResult))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", uniqueValidationResult.ErrorCode.ToString());
+                    await _redisCache.AddHash(serviceName, guid, "error_message", uniqueValidationResult.Error ?? "-");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(uniqueValidationResult.Ticket);
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(signedResponse));
+                }
+
+                // Дата не может быть пустой т.к. явялется обязательной по xsd, так же как id запроса и инн огрн в реквизитах.
+                await _redisCache.AddUniqueRequestId(serviceName, form.id, CryptoServiceResult.RequestOGRN!, DateTime.Now);
+
+                // Проверка наличия записи о сертификате с таким thumbprint в БД
+                if (!await _validationService.IsCertExists(cert.ToArray()))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "99");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Сертификат не найден.");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("99", "Сертификат не найден."));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(_cryptoService.SignMsg(ResponseXml)));
+                }
+
+                await _redisCache.AddHash(serviceName, guid, "ValidationTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                if (await _certManagement.SetCertificateInactive(cert.ToArray(), guid))
+                {
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateSuccessReceipt(form.id, DateTime.Today));
+                    await _redisCache.AddHash(serviceName, guid, "response", _xmlService.SerializeAsByte(ResponseXml));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return File(signedResponse, "application/octet-stream");
+                }
+                else
+                {
+                    await _redisCache.AddHash(serviceName, guid, "error_code", "99");
+                    await _redisCache.AddHash(serviceName, guid, "error_message", "Не удалось удалить сертификат.");
+                    await _redisCache.AddHash(serviceName, guid, "Thumbprint", requestCertificate?.Thumbprint ?? "-");
+                    ResponseXml = _xmlService.SerializeAsByte(_ticketService.CreateErrorReceipt("99", "Не удалось удалить сертификат."));
+                    signedResponse = _cryptoService.SignMsg(ResponseXml);
+                    return BadRequest(new MemoryStream(_cryptoService.SignMsg(ResponseXml)));
+                }
+
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical(ex, "Возникла критическая ошибка");
+                await _redisCache.AddHash(serviceName, guid, "error_code", 500.ToString());
+                await _redisCache.AddHash(serviceName, guid, "error_message", ex.ToString());
+                return StatusCode(500);
+            }
+            finally
+            {
+                if (signedResponse is not null)
+                    await _redisCache.AddHash(serviceName, guid, "SignedResponse", signedResponse);
+
+                if (ResponseXml is not null)
+                    await _redisCache.AddHash(serviceName, guid, "ResponseXml", ResponseXml);
+
+                // Если время окончания валидации не существует, значит провекра не пройдена и результат таски возвращен не будет
+                await _redisCache.AddHash(serviceName, guid, "ValidationTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                // Время ответа
+                await _redisCache.AddHash(serviceName, guid, "ResponseTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
+
+                // Выгрузка в кафку
+                await _kafka.Produce(new Message<Null, string> { Value = $"QBCH:{serviceName}:{guid}" }, _kakfaTopic);
             }
         }
     }

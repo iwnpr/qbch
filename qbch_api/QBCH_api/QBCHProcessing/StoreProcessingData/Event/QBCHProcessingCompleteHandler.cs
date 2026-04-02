@@ -1,29 +1,29 @@
-﻿using System.Text;
-using System.Text.Json;
-using Application_lib;
+﻿using Cache_lib.Interfaces;
 using Confluent.Kafka;
-using Domain.QBCHModels.aggregate;
+using KafkaService_lib.Services.Interfaces;
 using MediatR;
+using Microsoft.Extensions.Options;
+using QBCH_api.Configuration;
+using QBCH_lib.domain.aggregate;
+using System.Text;
+using System.Text.Json;
 
-namespace QBCH_api.QBCHProcessing.StoreProcessingData.Event;
+namespace QBCH_api.QBCHProcessing.StoreProcessingData.Commands;
 
-/// <summary>
-/// 
-/// </summary>
-/// <param name="logger"></param>
-/// <param name="redisCache"></param>
-/// <param name="kafka"></param>
-public class QBCHProcessingCompleteHandler(
-    ILogger<QBCHProcessingCompleteHandler> logger,
-    IRedisAdapter redisCache,
-    IKafkaAdapter kafka,
-    IConfiguration config) : INotificationHandler<QBCHProcessingComplete>
+public class QBCHProcessingCompleteHandler : INotificationHandler<QBCHProcessingComplete>
 {
-    private readonly ILogger<QBCHProcessingCompleteHandler> _logger = logger;
-    private readonly IRedisAdapter _redisCache = redisCache;
-    private readonly IKafkaAdapter _kafka = kafka;
-    private readonly IConfiguration _config = config;
+    private readonly ILogger<QBCHProcessingCompleteHandler> _logger;
+    private readonly ICacheService _redisCache;
+    private readonly IKafkaService _kafka;
+    private readonly ApiV3ContractOptions _contractOptions;
 
+    public QBCHProcessingCompleteHandler(ILogger<QBCHProcessingCompleteHandler> logger, ICacheService redisCache, IKafkaService kafka, IOptions<ApiV3ContractOptions> contractOptions)
+    {
+        _logger = logger;
+        _redisCache = redisCache;
+        _kafka = kafka;
+        _contractOptions = contractOptions.Value;
+    }
     public async Task Handle(QBCHProcessingComplete notification, CancellationToken cancellationToken)
     {
         var transaction = notification.Transaction;
@@ -32,9 +32,10 @@ public class QBCHProcessingCompleteHandler(
             var key = $"QBCH:{transaction.ServiceName}:{transaction.Id}";
             var processigResultData = await ConstractResultData(transaction);
             await _redisCache.AddHashArray(transaction.ServiceName, transaction.Id.ToString(), processigResultData);
+            await _redisCache.TrySetKeyExpiration(transaction.ServiceName, transaction.Id.ToString(), _contractOptions.ResponseRetentionHours * 60L, cancellationToken);
 
-            // Попытка отправки в кафку
-            if (!await _kafka.Produce(new Message<Null, string> { Value = key }, _config.GetValue<string>("KafkaService:Topic"))) // 1.3 - 2.0 разделить
+            // Попытка отправки в кафку                    
+            if (!await _kafka.Produce(new Message<Null, string> { Value = key })) // 1.3 - 2.0 разделить
                 _logger.LogCritical("Lost key:{key}", key);
         }
         catch (Exception ex)
@@ -46,9 +47,9 @@ public class QBCHProcessingCompleteHandler(
                 var sb = new StringBuilder();
                 sb.AppendLine(JsonSerializer.Serialize(new
                 {
-                    transaction.RequestTime,
-                    transaction.ClentRequest.IpAddress,
-                    transaction.ClentRequest?.Certificate?.Thumbprint,
+                    RequestTime = transaction.RequestTime,
+                    IpAddress = transaction.ClentRequest.IpAddress,
+                    Thumbprint = transaction.ClentRequest?.Certificate?.Thumbprint,
                     ErrorCode = transaction.ProcessingErrors?.FirstOrDefault()?.Code,
                     ErrorMessage = transaction.ProcessingErrors?.FirstOrDefault()?.Message,
                     SignedRequest = transaction.Attachment.SignedRequestBody,
@@ -57,10 +58,10 @@ public class QBCHProcessingCompleteHandler(
                     RequestType = transaction.ClentRequest.Request.ТипЗапроса,
                     SignedResponse_Ticket = transaction.Response.SignedTicket,
                     ResponseXml_Ticket = transaction.Response.TicketXML,
-                    transaction.Response.SignedResponse,
+                    SignedResponse = transaction.Response.SignedResponse,
                     ResponseXml = transaction.Response.ResponseXML,
                     ValidationTime = transaction.ValidateTime,
-                    transaction.ResponseTime
+                    ResponseTime = transaction.ResponseTime
                 }));
 
                 Directory.CreateDirectory("backup");

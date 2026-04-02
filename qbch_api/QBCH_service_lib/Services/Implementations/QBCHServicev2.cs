@@ -1,22 +1,23 @@
-﻿using System.Diagnostics;
-using System.Net;
-using System.Text.Json;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using QBCH_lib.CommonTypes.Api;
 using QBCH_lib.domain.aggregate;
-using QBCH_lib.qcb_xml.v2_0.CommonTypes;
-using QBCH_lib.qcb_xml.v2_0.Enums;
-using QBCH_lib.qcb_xml.v2_0.qcb_answer;
-using QBCH_lib.qcb_xml.v2_0.qcb_request;
-using QBCH_lib.qcb_xml.v2_0.qcb_result;
+using QBCH_lib.qcb_xml.v3_0.CommonTypes;
+using QBCH_lib.qcb_xml.v3_0.Enums;
+using QBCH_lib.qcb_xml.v3_0.qcb_answer;
+using QBCH_lib.qcb_xml.v3_0.qcb_request;
+using QBCH_lib.qcb_xml.v3_0.qcb_result;
 using QBCHService_lib.Models;
+using System.Diagnostics;
+using System.Net;
+using System.Text.Json;
 
 namespace QBCHService_lib.Services.Implementations
 {
     public partial class QBCHService
     {
         /// <summary>
-        /// Сведения о платежах из нашей БД
+        /// Агрегация сведений из нашей БД по ссп / замозапрет / антифрод
         /// </summary>
         /// <param name="processing"></param>
         /// <returns></returns>
@@ -29,7 +30,7 @@ namespace QBCHService_lib.Services.Implementations
             // Готовим шаблон ответа
             ОтветНаЗапросСведений answer = new()
             {
-                Версия = "2.0",
+                Версия = "3.0",
                 ИдентификаторЗапроса = package!.ИдентификаторЗапроса,
                 ИдентификаторОтвета = processing.Id.ToString(),
                 ОГРН = _OurBureauPSRN,
@@ -94,14 +95,14 @@ namespace QBCHService_lib.Services.Implementations
 
                 // Получаем список SubjectId по титульной части xml
                 List<long> subjectKeys = await _qbchDb.GetSearchAllSubjects(xml, timeLeft);
-
+                
                 timer.Stop();
                 timeLeft -= timer.ElapsedMilliseconds;
                 _logger.LogDebug("{guid} {Bureau}: Search all subjects time {elapsed}", processing.Id, _OurBureauPSRN, timer.Elapsed);
 
                 bool subjectFound = subjectKeys.Count != 0;
                 bool isITNChecked = запрос.Субъект.ИНН?.ПризнакПроверки is not null && запрос.Субъект.ИНН.ПризнакПроверки == ТипИННФЛсПризнакомПризнакПроверки.Item1;
-                bool isAPMrequest = package.КодСведений == СправочникВидыСведений.AmpSP3;
+                bool isPaymentsRequested = package.КодСведений == СправочникВидыСведений.AmpSP3;
 
                 // Заполняем данными по условию
                 if (subjectFound)
@@ -109,7 +110,7 @@ namespace QBCHService_lib.Services.Implementations
                     var SPTask = _qbchDb.GetSelfProhibition(subjectKeys, timeLeft);
                     var AMPTask = _qbchDb.GetCalculationOfAmp(subjectKeys, timeLeft);
 
-                    if (isAPMrequest)
+                    if (isPaymentsRequested)
                         await Task.WhenAll([SPTask, AMPTask]);
                     else
                         await SPTask;
@@ -134,7 +135,7 @@ namespace QBCHService_lib.Services.Implementations
                     }
 
                     // Если тип запроса ССП + СЗ запрашиваем ССП
-                    if (isAPMrequest)
+                    if (isPaymentsRequested)
                     {
                         var xAmpDB = AMPTask.Result;
                         ampFromDB = _xmlService.Deserialize<Обязательства>(xAmpDB);
@@ -165,8 +166,6 @@ namespace QBCHService_lib.Services.Implementations
                 answer.Сведения.Add(response);
             }
 
-
-            //await _redisCache.AddHash("dlrequest", $"{processing.Id}:{_OurBureauPSRN}", "ResponseTime", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
             return new(_OurBureauPSRN, answer2: answer);
         }
 
@@ -245,7 +244,7 @@ namespace QBCHService_lib.Services.Implementations
                             {
                                 // Ответ вернулся => завершаем метод, возвращаем овтет, всем спасибо всем пока
                                 case HttpStatusCode.OK:
-                                    validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\2\qcb_answer.xsd", guid, ticketCPCts.Token, DLRequestRedisMessage);
+                                    validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\3\qcb_answer.xsd", guid, ticketCPCts.Token, DLRequestRedisMessage);
                                     if (validationresult.IsError)
                                     {
                                         _logger.LogDebug("{guid} {Bureau}: InvalidAnswer {err}", guid, bureau.ogrn!, validationresult.Error);
@@ -264,7 +263,7 @@ namespace QBCHService_lib.Services.Implementations
 
                                 // Вернулась ошибка => завершаем метод, возвращаем овтет, всем спасибо всем пока
                                 case HttpStatusCode.BadRequest:
-                                    validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\2\qcb_result.xsd", guid, ticketCPCts.Token, DLRequestRedisMessage);
+                                    validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\3\qcb_result.xsd", guid, ticketCPCts.Token, DLRequestRedisMessage);
                                     if (validationresult.IsError)
                                     {
                                         _logger.LogDebug("{guid} {Bureau}: InvalidAnswer {err}", guid, bureau.ogrn!, validationresult.Error);
@@ -292,7 +291,7 @@ namespace QBCHService_lib.Services.Implementations
 
                                 // Вернулся тикет => выходим из цикла, идем стучаться в dlanswer с идентификатором, который вернулся в ответе
                                 case HttpStatusCode.Accepted:
-                                    validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\2\qcb_result.xsd", guid, ticketCPCts.Token, DLRequestRedisMessage);
+                                    validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\3\qcb_result.xsd", guid, ticketCPCts.Token, DLRequestRedisMessage);
                                     if (validationresult.IsError)
                                     {
                                         _logger.LogDebug("{guid} {Bureau}: InvalidAnswer {err}", guid, bureau.ogrn!, validationresult.Error);
@@ -379,7 +378,7 @@ namespace QBCHService_lib.Services.Implementations
 
             _logger.LogDebug("{guid} {Bureau}: Таймаут для запросов {TimeLeft} ms", guid, bureau.ogrn!, timeLeftMs);
 
-            DlAnswerRedisMessage DLAnswerRedisMessage = DlAnswerRedisMessage.Create();
+             DlAnswerRedisMessage DLAnswerRedisMessage = DlAnswerRedisMessage.Create();
 
             // Ответ на запрос метода dlanswer
             ОтветНаЗапросСведений? dlanswerResult = null;
@@ -413,7 +412,7 @@ namespace QBCHService_lib.Services.Implementations
                 DLAnswerRedisMessage = DlAnswerRedisMessage.Create();
                 DLAnswerRedisMessage.SetError("18", "Время ожидания ответа истекло.").SetResponseCode(responseMessage?.StatusCode).SetResponseTime(DateTime.Now);
                 dlanswerResult = ОтветНаЗапросСведений.CreateError(bureau.ogrn!, "18", "Время ожидания ответа истекло.", ПорядковыеНомера);
-                await _redisCache.ListSet(key: ["dlrequest", guid, bureau.ogrn!, DLAnswerRedisMessage.Name], value: JsonSerializer.Serialize(DLAnswerRedisMessage));
+                await _redisCache.ListSet(key: [DLAnswerRedisMessage.Name, guid, bureau.ogrn!, DLAnswerRedisMessage.Name], value: JsonSerializer.Serialize(DLAnswerRedisMessage));
             }
 
             _logger.LogDebug("{guid} {Bureau}: dlanswer response {dt}", guid, bureau.ogrn!, DateTime.Now);
@@ -455,7 +454,7 @@ namespace QBCHService_lib.Services.Implementations
                     switch (responseMessage.StatusCode)
                     {
                         case HttpStatusCode.OK:
-                            validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\2\qcb_answer.xsd", guid, ct, DLAnswerRedisMessage);
+                            validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\3\qcb_answer.xsd", guid, ct, DLAnswerRedisMessage);
                             if (validationresult.IsError)
                             {
                                 _logger.LogDebug("{guid} {Bureau}: InvalidAnswer {err}", guid, bureau.ogrn!, validationresult.Error);
@@ -470,7 +469,7 @@ namespace QBCHService_lib.Services.Implementations
                         // Такого быть не должно - это ошибка!
                         case HttpStatusCode.Accepted:
                         case HttpStatusCode.BadRequest:
-                            validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\2\qcb_result.xsd", guid, ct, DLAnswerRedisMessage);
+                            validationresult = ValidateAnswer(ms.ToArray(), bureau, @"xsd\3\qcb_result.xsd", guid, ct, DLAnswerRedisMessage);
                             if (validationresult.IsError)
                             {
                                 _logger.LogDebug("{guid} {Bureau}: InvalidAnswer {err}", guid, bureau.ogrn!, validationresult.Error);
@@ -520,7 +519,7 @@ namespace QBCHService_lib.Services.Implementations
                 {
                     _logger.LogError(ex, "Не удалось установить соединение. КБКИ: {bureau}  address: {address}", bureau.Name, $"/dlanswer?id={responseId}");
                     DLAnswerRedisMessage.SetError("17", "Не удалось установить соединение.").SetResponseCode(responseMessage?.StatusCode).SetResponseTime(DateTime.Now);
-                    await _redisCache.ListSet(key: ["dlrequest", guid, bureau.ogrn!, DLAnswerRedisMessage.Name], value: JsonSerializer.Serialize(DLAnswerRedisMessage));
+                    await _redisCache.ListSet(key: [DLAnswerRedisMessage.Name, guid, bureau.ogrn!, DLAnswerRedisMessage.Name], value: JsonSerializer.Serialize(DLAnswerRedisMessage));
                     //dlanswerResult = ОтветНаЗапросСведений.CreateError(bureau.ogrn!, "17", "Не удалось установить соединение.", ПорядковыеНомера);
                 }
                 catch (TaskCanceledException)
@@ -531,7 +530,7 @@ namespace QBCHService_lib.Services.Implementations
                 {
                     _logger.LogCritical(ex, "Ошибка получения ответа от КБКИ: {bureau}  address: {address}", bureau.Name, $"/dlanswer?id={responseId}");
                     DLAnswerRedisMessage.SetError("99", $"Код ответа: {responseMessage?.StatusCode} Message:{(responseMessage is not null ? await responseMessage.Content.ReadAsStringAsync() : string.Empty)}").SetResponseCode(responseMessage?.StatusCode).SetResponseTime(DateTime.Now);
-                    await _redisCache.ListSet(key: ["dlrequest", guid, bureau.ogrn!, DLAnswerRedisMessage.Name], value: JsonSerializer.Serialize(DLAnswerRedisMessage));
+                    await _redisCache.ListSet(key: [DLAnswerRedisMessage.Name, guid, bureau.ogrn!, DLAnswerRedisMessage.Name], value: JsonSerializer.Serialize(DLAnswerRedisMessage));
                 }
             }
         }
@@ -596,7 +595,7 @@ namespace QBCHService_lib.Services.Implementations
                 redisMessage?.SetResponseXml(cryptoResult.Body);
             }
 
-            var xsdValidation = _xmlService.ValidateXml(new MemoryStream(cryptoResult.Body), [schemaName, @"xsd\2\qcb_common.xsd"]);
+            var xsdValidation = _xmlService.ValidateXml(new MemoryStream(cryptoResult.Body), [schemaName, @"xsd\3\qcb_common.xsd"]);
 
             if (xsdValidation != null && !string.IsNullOrWhiteSpace(xsdValidation.Error))
             {
