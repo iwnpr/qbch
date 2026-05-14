@@ -7,26 +7,35 @@ using Crypto_lib.Service;
 using KafkaService_lib.Services.Implementation;
 using KafkaService_lib.Services.Interfaces;
 using Microsoft.AspNetCore.Authentication.Certificate;
-using QBCH_api.Configuration;
 using Microsoft.FeatureManagement;
 using Microsoft.OpenApi.Models;
 using QBCH_api.Services.Implementations;
+using QBCH_api.Services.Implementations.V3;
 using QBCH_api.Services.Interfaces;
+using QBCH_api.Services.Interfaces.V3;
 using Qbch_db_lib.Services.Implementations;
+using Qbch_db_lib.Services.Implementations.V3;
 using Qbch_db_lib.Services.Interfaces;
+using Qbch_db_lib.Services.Interfaces.V3;
 using QBCH_lib.CommonTypes.Api;
+using QBCH_lib.Configuration;
 using QBCH_lib.Services.Implementations;
+using QBCH_lib.Services.Implementations.V3;
 using QBCH_lib.Services.Interfaces;
+using QBCH_lib.Services.Interfaces.V3;
 using QBCHService_lib.Services.Implementations;
+using QBCHService_lib.Services.Implementations.V3;
 using QBCHService_lib.Services.Interfaces;
+using QBCHService_lib.Services.Interfaces.V3;
 using Serilog;
 using Serilog.Core;
 using StackExchange.Redis;
 using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
-using IXmlService = XmlService_lib.Services.Interfaces.IXmlService;
-using XmlService = XmlService_lib.Services.Implementations.XmlService;
-
+using XmlService_lib.Services.Implementations.V3;
+using XmlService_lib.Services.Interfaces.V3;
+using XmlService_lib.Services.Implementations;
+using XmlService_lib.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 var configuration = builder.Configuration;
@@ -34,8 +43,10 @@ var serilog = new LoggerConfiguration().ReadFrom.Configuration(configuration).Cr
 
 builder.Services.Configure<ApiV3ContractOptions>(configuration.GetSection(ApiV3ContractOptions.SectionName));
 var contractOptions = configuration.GetSection(ApiV3ContractOptions.SectionName).Get<ApiV3ContractOptions>() ?? new ApiV3ContractOptions();
+var contractRules = new ApiV3ContractRules(contractOptions);
 
-builder.Services.AddSingleton(new ApiV3ContractRules(contractOptions));
+builder.Services.AddSingleton(contractOptions);
+builder.Services.AddSingleton(contractRules);
 builder.Host.UseSerilog(serilog);
 builder.Services.AddControllers();
 
@@ -66,22 +77,34 @@ builder.Services.AddAuthentication(
              options.AllowedCertificateTypes = CertificateTypes.All);
 
 // Добавление сервисов в контейнер
+
+// Main
 builder.Services.AddFeatureManagement(builder.Configuration.GetSection("FeatureFlags"));
+builder.Services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(configuration.GetConnectionString("Redis")));
 builder.Services.AddTransient<ICryptoService, CryptoService>();
+builder.Services.AddTransient<ICertManagementService, CertManagementService>();
+builder.Services.AddSingleton<ICompressService, CompressService>();
+ThreadPool.SetMinThreads(200, 200);
+builder.Services.AddTransient<ICacheService, CacheService>();
+builder.Services.AddSingleton<IBKIRequisitsHandler, BKIRequsits>();
+builder.Services.AddSingleton<IKafkaService, KafkaService>();
+
+
+// V_2.0
 builder.Services.AddTransient<IXmlService, XmlService>();
 builder.Services.AddTransient<IValidationService, ValidationService>();
 builder.Services.AddTransient<IRepository, Repository>();
 builder.Services.AddTransient<IQBCHService, QBCHService>();
 builder.Services.AddTransient<ITransformer, Transformer>();
 builder.Services.AddTransient<ITicketService, TicketService>();
-builder.Services.AddTransient<ICertManagementService, CertManagementService>();
-builder.Services.AddSingleton<ICompressService, CompressService>();
-builder.Services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(configuration.GetConnectionString("Redis")));
 
-ThreadPool.SetMinThreads(200, 200);
-builder.Services.AddTransient<ICacheService, CacheService>();
-builder.Services.AddSingleton<IBKIRequisitsHandler, BKIRequsits>();
-builder.Services.AddSingleton<IKafkaService, KafkaService>();
+// V_3.0
+builder.Services.AddTransient<IXmlServiceV3, XmlServiceV3>();
+builder.Services.AddTransient<IValidationServiceV3, ValidationServiceV3>();
+builder.Services.AddTransient<IRepositoryV3, RepositoryV3>();
+builder.Services.AddTransient<IQBCHServiceV3, QBCHServiceV3>();
+builder.Services.AddTransient<ITicketServiceV3, TicketServiceV3>();
+builder.Services.AddTransient<IDlPutServiceV3, DlPutServiceV3>();
 
 // Добавление http-клиентов в HttpClientFactory
 try
