@@ -37,21 +37,91 @@ namespace db_lib.Services.Implementations
         private readonly int _DlPutAnswerExpirationMin = config.GetValue<int>("RedisCache:DlPutAnswerExpirationMin");
         private readonly string? _eventTopic = config.GetValue<string>("Kafka:EventTopic");
 
+        /// <summary>
+        /// Имя поля Redis-хэша с версией API
+        /// </summary>
+        private const string ApiVersionField = "api_version";
+
+        /// <summary>
+        /// Имя поля Redis-хэша с версией контракта
+        /// </summary>
+        private const string ContractVersionField = "contract_version";
+
+        /// <summary>
+        /// Имя поля Redis-хэша с XML исходного запроса
+        /// </summary>
+        private const string RequestXmlField = "request_xml";
+
+        /// <summary>
+        /// Имя поля Redis-хэша с XML ответа
+        /// </summary>
+        private const string ResponseXmlField = "response_xml";
+
+        /// <summary>
+        /// Тип ключа Redis для dlrequest
+        /// </summary>
+        private const string RequestTypeDlRequest = "dlrequest";
+
+        /// <summary>
+        /// Тип ключа Redis для dlanswer
+        /// </summary>
+        private const string RequestTypeDlAnswer = "dlanswer";
+
+        /// <summary>
+        /// Тип ключа Redis для dlput
+        /// </summary>
+        private const string RequestTypeDlPut = "dlput";
+
+        /// <summary>
+        /// Тип ключа Redis для dlputanswer
+        /// </summary>
+        private const string RequestTypeDlPutAnswer = "dlputanswer";
+
+        /// <summary>
+        /// Имя поля Redis-хэша с кодом ошибки
+        /// </summary>
+        private const string ErrorCodeField = "error_code";
+
+        /// <summary>
+        /// Имя поля Redis-хэша с датой завершения задачи QBCH
+        /// </summary>
+        private const string QbchTasksEndDateTimeField = "qbch_tasks_end_date_time";
+
+        /// <summary>
+        /// Имя поля Redis-хэша с признаком отмены обработки
+        /// </summary>
+        private const string CancellationFlagField = "cancellation_flag";
+
+        /// <summary>
+        /// Код ошибки QBCH, при котором результат может быть отложенным
+        /// </summary>
+        private const int QbchErrorCodeWaitingResult = 12;
+
+        /// <summary>
+        /// Таймаут повторной обработки сообщения из error topic, в секундах
+        /// </summary>
+        private const int ErrorTopicHandlerTimeoutSeconds = 120;
+
+        /// <summary>
+        /// Пауза между повторными попытками обработки, в миллисекундах
+        /// </summary>
+        private const int ErrorTopicHandlerRetryDelayMilliseconds = 5000;
+
 
         private static bool IsV3(HashEntry[]? hashset)
         {
             if (hashset is null)
                 return false;
 
-            var apiVersion = hashset.FirstOrDefault(x => x.Name == "api_version").Value.ToString();
-            var contractVersion = hashset.FirstOrDefault(x => x.Name == "contract_version").Value.ToString();
+            var apiVersion = hashset.FirstOrDefault(x => x.Name == ApiVersionField).Value.ToString();
+            var contractVersion = hashset.FirstOrDefault(x => x.Name == ContractVersionField).Value.ToString();
 
             if (IsVersion3X(apiVersion) || IsVersion3X(contractVersion))
                 return true;
 
-            var xml = hashset.FirstOrDefault(x => x.Name == "request_xml").Value.ToString();
+            var xml = hashset.FirstOrDefault(x => x.Name == RequestXmlField).Value.ToString();
             xml = string.IsNullOrWhiteSpace(xml)
-                ? hashset.FirstOrDefault(x => x.Name == "response_xml").Value.ToString()
+                ? hashset.FirstOrDefault(x => x.Name == ResponseXmlField).Value.ToString()
                 : xml;
 
             return !string.IsNullOrWhiteSpace(xml) && xml.Contains("Версия=\"3.", StringComparison.OrdinalIgnoreCase);
@@ -62,7 +132,7 @@ namespace db_lib.Services.Implementations
 
         private async Task ProduceRequestXmlIfExists(HashEntry[] hashset, string key)
         {
-            var requestXml = hashset.FirstOrDefault(x => x.Name == "request_xml");
+            var requestXml = hashset.FirstOrDefault(x => x.Name == RequestXmlField);
             if (!requestXml.Name.HasValue || requestXml.Value.IsNullOrEmpty)
                 return;
 
@@ -94,55 +164,61 @@ namespace db_lib.Services.Implementations
 
             switch (redisKey[1])
             {
-                case "dlrequest":
+                case RequestTypeDlRequest:
 
-                    if (IsV3(hashset))
-                    {
-                        if (await _repositoryV3.CreateDlRequestV3(key, hashset))
-                        {
-                            await ProduceRequestXmlIfExists(hashset, key);
+                    var ErrorCode = (int)hashset.FirstOrDefault(x => x.Name == ErrorCodeField).Value;
 
-                            await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
-                            return;
-                        }
-                        break;
-                    }
-                    var ErrorCode = (int)hashset.FirstOrDefault(x => x.Name == "error_code").Value;
-
-                    if (!(ErrorCode == 12 && !hashset.Any(x => x.Name == "qbch_tasks_end_date_time")))
-                    {
-                        if (await _repository.CreateDlRequest(key, hashset))
-                        {
-                            await ProduceRequestXmlIfExists(hashset, key);
-
-                            await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
-                            return;
-                        }
-                    }
-                    break;
-
-                case "dlanswer":
-                    if (hashset is not null)
+                    if (!(ErrorCode == QbchErrorCodeWaitingResult && !hashset.Any(x => x.Name == QbchTasksEndDateTimeField)))
                     {
                         if (IsV3(hashset))
                         {
-                            if (await _repositoryV3.CreateDlAnswerV3(key, hashset))
+                            if (await _repositoryV3.CreateDlRequestV3(key, hashset))
                             {
-                                await _cacheService.SetKeyExpirationInMinutes(key, _DlAnswerExpirationMin);
+                                await ProduceRequestXmlIfExists(hashset, key);
+
+                                await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
                                 return;
                             }
                             break;
                         }
-
-                        if (await _repository.CreateDlAnswer(key, hashset))
+                        else
                         {
-                            await _cacheService.SetKeyExpirationInMinutes(key, _DlAnswerExpirationMin);
-                            return;
+                            if (await _repository.CreateDlRequest(key, hashset))
+                            {
+                                await ProduceRequestXmlIfExists(hashset, key);
+
+                                await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
+                                return;
+                            }
+                            break;
                         }
                     }
                     break;
 
-                case "dlput":
+                case RequestTypeDlAnswer:
+
+                    if (hashset is null)
+                        break;
+
+                    if (IsV3(hashset))
+                    {
+                        if (await _repositoryV3.CreateDlAnswerV3(key, hashset))
+                        {
+                            await _cacheService.SetKeyExpirationInMinutes(key, _DlAnswerExpirationMin);
+                            return;
+                        }
+                        break;
+                    }
+
+                    if (await _repository.CreateDlAnswer(key, hashset))
+                    {
+                        await _cacheService.SetKeyExpirationInMinutes(key, _DlAnswerExpirationMin);
+                        return;
+                    }
+
+                    break;
+
+                case RequestTypeDlPut:
                     if (IsV3(hashset) && await _repositoryV3.CreateDlPutV3(key, hashset))
                     {
                         await _cacheService.SetKeyExpirationInMinutes(key, _DlPutExpirationMin);
@@ -150,7 +226,7 @@ namespace db_lib.Services.Implementations
                     }
                     break;
 
-                case "dlputanswer":
+                case RequestTypeDlPutAnswer:
                     if (IsV3(hashset) && await _repositoryV3.CreateDlPutAnswerV3(key, hashset))
                     {
                         await _cacheService.SetKeyExpirationInMinutes(key, _DlPutAnswerExpirationMin);
@@ -171,9 +247,9 @@ namespace db_lib.Services.Implementations
 
             switch (redisKey[1])
             {
-                case "dlrequest":
+                case RequestTypeDlRequest:
 
-                    var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+                    var cts = new CancellationTokenSource(TimeSpan.FromSeconds(ErrorTopicHandlerTimeoutSeconds));
                     bool IsCancelled = false;
                     HashEntry[]? hashset = null;
 
@@ -183,9 +259,9 @@ namespace db_lib.Services.Implementations
 
                         if (hashset is not null)
                         {
-                            var ErrorCode = (int)hashset.FirstOrDefault(x => x.Name == "error_code").Value;
+                            var ErrorCode = (int)hashset.FirstOrDefault(x => x.Name == ErrorCodeField).Value;
 
-                            if (!(ErrorCode == 12 && !hashset.Any(x => x.Name == "qbch_tasks_end_date_time")))
+                            if (!(ErrorCode == QbchErrorCodeWaitingResult && !hashset.Any(x => x.Name == QbchTasksEndDateTimeField)))
                             {
                                 if (IsV3(hashset))
                                 {
@@ -209,15 +285,16 @@ namespace db_lib.Services.Implementations
                                 }
                             }
 
-                            IsCancelled = hashset.Any(x => x.Name == "cancellation_flag");
+                            IsCancelled = hashset.Any(x => x.Name == CancellationFlagField);
                         }
 
-                        await Task.Delay(5000);
+                        await Task.Delay(ErrorTopicHandlerRetryDelayMilliseconds);
                     }
                     while (!IsCancelled || !cts.IsCancellationRequested);
 
                     break;
-                case "dlanswer":
+
+                case RequestTypeDlAnswer:
                     hashset = await _cacheService.TryGetHashAll(key);
 
                     if (hashset is not null)
@@ -240,7 +317,7 @@ namespace db_lib.Services.Implementations
 
                     break;
 
-                case "dlput":
+                case RequestTypeDlPut:
                     hashset = await _cacheService.TryGetHashAll(key);
                     if (hashset is null)
                     {
@@ -254,7 +331,7 @@ namespace db_lib.Services.Implementations
                     }
                     break;
 
-                case "dlputanswer":
+                case RequestTypeDlPutAnswer:
                     hashset = await _cacheService.TryGetHashAll(key);
                     if (hashset is null)
                     {
@@ -303,12 +380,12 @@ namespace db_lib.Services.Implementations
 
                 if (result.Status == PersistenceStatus.NotPersisted)
                 {
-                    _logger.LogError("Сообщение не доставлено до брокера {key}", key);
+                    _logger.LogError("Сообщение не доставлено до EventTopic {key}", key);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogCritical(ex, "Ошибка produce в кафку. EventTopic.");
+                _logger.LogCritical(ex, "Ошибка записи EventTopic.");
             }
         }
     }

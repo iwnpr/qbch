@@ -28,6 +28,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<None Remove="Controllers\QBCHIIIController.cs~RF1682b75f.TMP" />
 		<None Remove="xsd\qcb_common.xsd" />
 		<None Remove="xsd\qcb_put.xsd" />
 		<None Remove="xsd\qcb_request.xsd" />
@@ -67,7 +68,7 @@
 		<ProjectReference Include="..\CertManagement\CertManagement.csproj" />
 		<ProjectReference Include="..\KafkaService_lib\KafkaService_lib.csproj" />
 		<ProjectReference Include="..\qbch_db_lib\Qbch_db_lib.csproj" />
-		<ProjectReference Include="..\qbch_lib\QBCH_lib.csproj" />
+		<ProjectReference Include="..\qbch_lib\qbch_lib.csproj" />
 		<ProjectReference Include="..\crypro_lib\Crypto_lib.csproj" />
 		<ProjectReference Include="..\QBCH_service_lib\QBCHService_lib.csproj" />
 		<ProjectReference Include="..\XmlService_lib\XmlService_lib.csproj" />
@@ -95,6 +96,12 @@
 	  <None Update="xsd\qcb_result.xsd">
 	    <CopyToOutputDirectory>Always</CopyToOutputDirectory>
 	  </None>
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Content Include="xsd/**">
+	    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+	  </Content>
 	</ItemGroup>
 
 </Project>

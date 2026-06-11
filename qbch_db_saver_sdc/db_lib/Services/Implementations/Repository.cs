@@ -20,13 +20,13 @@ using Xml_service_lib;
 namespace db_lib.Services.Implementations
 {
     public class Repository(
-        qbchContext context,
+        QbchV3Context context,
         ICacheService cacheService,
         ILogger<Repository> logger,
         IXmlService xmlService,
         IBKIRequisitsHandler requisits) : IRepository
     {
-        private readonly qbchContext _context = context;
+        private readonly QbchV3Context _context = context;
         private readonly ICacheService _cacheService = cacheService;
         private readonly ILogger<Repository> _logger = logger;
         private readonly IXmlService _xmlService = xmlService;
@@ -605,6 +605,12 @@ namespace db_lib.Services.Implementations
             }
 
             var ЗапросСведений = TryDeserialize<ЗапросСведений>(hashset.FirstOrDefault(x => x.Name == "request_xml").Value.ToString());
+
+            if (ЗапросСведений is null)
+            {
+                _logger.LogWarning($"не удалось считать данные блока {nameof(ЗапросСведений)}");
+            }
+
             var requestlist = ЗапросСведений?.Запрос.Select(x => x.ПорядковыйНомер);
             TrAbonent? trAbonent = await GetAbonentByThumbprint(hashset.FirstOrDefault(x => x.Name == "request_certificate_thumbprint").Value.ToString());
             var errorCode = GetIntValue(hashset.FirstOrDefault(x => x.Name == "error_code").Value);

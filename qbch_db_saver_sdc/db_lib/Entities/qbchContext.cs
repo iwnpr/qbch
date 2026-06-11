@@ -4,15 +4,16 @@ using Microsoft.EntityFrameworkCore;
 
 namespace db_lib.Entities;
 
-public partial class qbchContext : DbContext
+public partial class QbchContext : DbContext
 {
-    public qbchContext()
+    public QbchContext(DbContextOptions<QbchContext> options)
+        : base(options)
     {
     }
 
-    public qbchContext(DbContextOptions<qbchContext> options)
-        : base(options)
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
+        //optionsBuilder.UseNpgsql(_config.GetConnectionString("DataBase"));
     }
 
     public virtual DbSet<TdPermission> TdPermissions { get; set; }
@@ -66,6 +67,8 @@ public partial class qbchContext : DbContext
     public virtual DbSet<TrSpResponseType> TrSpResponseTypes { get; set; }
 
     public virtual DbSet<TrUserType> TrUserTypes { get; set; }
+
+
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -880,4 +883,5 @@ public partial class qbchContext : DbContext
     }
 
     partial void OnModelCreatingPartial(ModelBuilder modelBuilder);
+
 }

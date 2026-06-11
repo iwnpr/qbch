@@ -2,6 +2,9 @@
 using KafkaService_lib.Services.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
+using Polly;
+using Polly.Timeout;
 
 namespace KafkaService_lib.Services.Implementation
 {
@@ -19,6 +22,9 @@ namespace KafkaService_lib.Services.Implementation
         private readonly int _messageTimeoutMs;
         private readonly int _requestTimeoutMs;
         private readonly int _socketTimeoutMs;
+        private readonly int _produceRetryCount;
+        private readonly int _produceRetryDelayMs;
+        private readonly int _produceRetryTotalTimeoutMs;
         private readonly ICompressService _compressService;
 
 
@@ -34,6 +40,9 @@ namespace KafkaService_lib.Services.Implementation
             _messageTimeoutMs = _config.GetValue<int>("KafkaService:MessageTimeoutMs");
             _requestTimeoutMs = _config.GetValue<int>("KafkaService:RequestTimeoutMs");
             _socketTimeoutMs = _config.GetValue<int>("KafkaService:SocketTimeoutMs");
+            _produceRetryCount = _config.GetValue<int?>("KafkaService:ProduceRetryCount") ?? 2;
+            _produceRetryDelayMs = _config.GetValue<int?>("KafkaService:ProduceRetryDelayMs") ?? 100;
+            _produceRetryTotalTimeoutMs = _config.GetValue<int?>("KafkaService:ProduceRetryTotalTimeoutMs") ?? 2000;
         }
 
         public bool IsAvailable()
@@ -56,20 +65,6 @@ namespace KafkaService_lib.Services.Implementation
 
             return true;
         }
-        //Обработка ошибки при доставке сообщения в топик
-
-        void DeliveryReportHandler(DeliveryReport<string, string> deliveryReport)
-        {
-
-            if (deliveryReport.Error.IsError || deliveryReport.Error.IsFatal || deliveryReport.Error.IsLocalError || deliveryReport.Error.IsBrokerError)
-            {
-                _logger.LogCritical($"Kafka Delivery Topic: {deliveryReport.Topic} Partition: {deliveryReport.Partition} Offset: {deliveryReport.Offset} Error: {deliveryReport.Error.Reason}");
-                throw new Exception($"Kafka Delivery Topic: {deliveryReport.Topic} Partition: {deliveryReport.Partition} Offset: {deliveryReport.Offset} Error: {deliveryReport.Error.Reason}");
-            }
-            else
-                _logger.LogDebug($"Kafka Delivery Topic: {deliveryReport.Topic} Partition: {deliveryReport.Partition} Offset: {deliveryReport.Offset}");
-        }
-
 
         public async Task<bool> Produce(Message<Null, string> message, string? topic = null)
         {
@@ -87,16 +82,35 @@ namespace KafkaService_lib.Services.Implementation
             }).Build();
 
             topic ??= _topic;
+            var maxAttempts = _produceRetryCount + 1;
+            var timeoutPolicy = Policy.TimeoutAsync(_produceRetryTotalTimeoutMs / 1000, TimeoutStrategy.Optimistic);
+            var retryPolicy = Policy
+                .Handle<ProduceException<Null, string>>()
+                .WaitAndRetryAsync(
+                    _produceRetryCount,
+                    _ => TimeSpan.FromMilliseconds(_produceRetryDelayMs),
+                    (exception, delay, retryNumber, _) =>
+                    {
+                        _logger.LogWarning(exception, "Ошибка добавления в кафку {value}. Попытка {attempt}/{maxAttempts}. Повтор через {delayMs} ms", message.Value, retryNumber, maxAttempts, (int)delay.TotalMilliseconds);
+                    });
+
+            var policy = Policy.WrapAsync(timeoutPolicy, retryPolicy);
 
             try
             {
-                await _producerMsg.ProduceAsync(topic, message);
+                await policy.ExecuteAsync(async token =>
+                {
+                    await _producerMsg.ProduceAsync(topic, message);
+                    return true;
+                }, CancellationToken.None);
+
                 return true;
             }
-            catch (ProduceException<Null, string> e)
+            catch (Exception e) when (e is ProduceException<Null, string> || e is TimeoutRejectedException)
             {
-                _logger.LogCritical(e, "Ошибка добавления в кафку {value}", message.Value);
+                _logger.LogError(e, "Ошибка добавления в кафку {value}. Достигнут лимит ретраев/времени ({timeoutMs} ms)", message.Value, _produceRetryTotalTimeoutMs);
                 return false;
+
             }
         }
 
