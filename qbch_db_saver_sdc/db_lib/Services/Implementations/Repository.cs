@@ -19,12 +19,7 @@ using Xml_service_lib;
 
 namespace db_lib.Services.Implementations
 {
-    public class Repository(
-        QbchV3Context context,
-        ICacheService cacheService,
-        ILogger<Repository> logger,
-        IXmlService xmlService,
-        IBKIRequisitsHandler requisits) : IRepository
+    public class Repository(QbchV3Context context, ICacheService cacheService, ILogger<Repository> logger, IXmlService xmlService, IBKIRequisitsHandler requisits) : IRepository
     {
         private readonly QbchV3Context _context = context;
         private readonly ICacheService _cacheService = cacheService;

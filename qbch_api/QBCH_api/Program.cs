@@ -203,6 +203,7 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
     var clientName = section.GetValue<string>("Name");
     var url = section.GetValue<string>("Url");
     var urlv2 = section.GetValue<string>("Urlv2");
+    var urlv3 = section.GetValue<string>("Urlv3");
 
     if (string.IsNullOrWhiteSpace(clientName))
     {
@@ -220,42 +221,45 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
     // Проверяем, что значение указано
     if (string.IsNullOrEmpty(urlv2))
     {
+        serilog.Fatal("Отсутствует BaseAddress для http-клиента v2: {clientName}.", clientName);
+        throw new NullReferenceException();
+    }
+
+    if (string.IsNullOrEmpty(urlv3))
+    {
         serilog.Fatal("Отсутствует BaseAddress для http-клиента v3: {clientName}.", clientName);
         throw new NullReferenceException();
     }
 
-    // Добавление http-client в фабрику HttpClientFactory
-    builder.Services.AddHttpClient(clientName, client =>
+    var httpClientBuilder = builder.Services.AddHttpClient(clientName, client =>
     {
-        client.BaseAddress = new(url);
-        client.Timeout = TimeSpan.FromSeconds(4);
+        client.BaseAddress = new Uri(url);
         client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
-    })
-        // Добавляем сертификат в запрос
-        .ConfigurePrimaryHttpMessageHandler(() =>
-        {
-            return new HttpClientHandler
-            {
-                ClientCertificateOptions = ClientCertificateOption.Manual,
-                ClientCertificates = { certificate },
-                ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
-            };
-        });
+    });
 
-    builder.Services.AddHttpClient($"{clientName}v3", client =>
+    var httpClientBuilderV3 = builder.Services.AddHttpClient($"{clientName}v3", client =>
     {
-        client.BaseAddress = new(urlv2);
-        client.Timeout = TimeSpan.FromSeconds(4);
+        client.BaseAddress = new Uri(urlv3);
         client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
-    })
-        // Добавляем сертификат в запрос
-        .ConfigurePrimaryHttpMessageHandler(() =>
+    });
+
+    var httpClientBuilderV2 = builder.Services.AddHttpClient($"{clientName}v2", client =>
+    {
+        client.BaseAddress = new Uri(urlv2);
+        client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
+    });
+
+    HttpClientHandler CreateCertificateHandler()
+    {
+        return new HttpClientHandler
         {
-            return new HttpClientHandler
-            {
-                ClientCertificateOptions = ClientCertificateOption.Manual,
-                ClientCertificates = { certificate },
-                ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
-            };
-        });
+            ClientCertificateOptions = ClientCertificateOption.Manual,
+            ClientCertificates = { certificate },
+            ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+        };
+    }
+
+    httpClientBuilder.ConfigurePrimaryHttpMessageHandler(CreateCertificateHandler);
+    httpClientBuilderV2.ConfigurePrimaryHttpMessageHandler(CreateCertificateHandler);
+    httpClientBuilderV3.ConfigurePrimaryHttpMessageHandler(CreateCertificateHandler);
 }

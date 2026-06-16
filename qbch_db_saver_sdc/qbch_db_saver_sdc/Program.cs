@@ -27,9 +27,7 @@ if (Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER") != "true")
 }
 
 //Подключаем файл конфигурации
-IConfiguration configuration = new ConfigurationBuilder()
-    .AddJsonFile("appsettings.json")
-    .Build();
+IConfiguration configuration = new ConfigurationBuilder().AddJsonFile("appsettings.json").Build();
 
 var bootstrapServers = configuration.GetValue<string>("Kafka:BootstrapServers");
 var topic = configuration.GetSection("Kafka:Topic").Value;
@@ -100,7 +98,7 @@ if (string.IsNullOrWhiteSpace(errorTopic))
     return;
 }
 
-_logger.LogDebug("Event Topic установлен в значение {eventTopic}", eventTopic ?? "Null");
+_logger.LogDebug("Event Topic установлен в значение {eventTopic}", eventTopic);
 _logger.LogDebug("Application started IsErrorApp:{_isErrorApp}", isErrorApp);
 
 if (!int.TryParse(Environment.GetEnvironmentVariable("PARALLEL"), out var ParallelConsumersCount))
@@ -144,6 +142,7 @@ Task CreateConsumerAsync(IServiceProvider serviceProvider, IConsumer<Ignore, str
         catch (Exception ex)
         {
             _logger.LogCritical(ex, "Возникла ошибка записи в БД - {key}", key);
+
                 if (!isErrorApp)
             producer.ProduceAsync(errorTopic, new() { Value = cr.Message.Value }).Wait();
         }
