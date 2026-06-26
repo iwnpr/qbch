@@ -1,5 +1,4 @@
-﻿using QBCH.Lib.qcb_xml.v3_0;
-using QBCH_api.Services.Interfaces.V3;
+﻿using QBCH_api.Services.Interfaces.V3;
 using qbch_lib.domain.errors;
 using QBCH_lib.domain.aggregate;
 using QBCH_lib.domain.aggregate.V3;
@@ -25,21 +24,32 @@ public static class XSDValidatorV3
 
         if (transaction.Attachment.RequestBody is null)
         {
-            transaction.RiseCriticalError(Error.Code2_EmptyRequestBody());
+            transaction.RiseCriticalError(AnswerErrorCode.Code2_EmptyRequestBody());
             return transaction;
         }
 
         using var xmlStream = new MemoryStream(transaction.Attachment.RequestBody);
         if (!validationService.ValidateXmlV3(xmlStream, transaction.ServiceName, out var xmlValidationResult))
         {
-            transaction.RiseCriticalError(new Error(xmlValidationResult!.ErrorCode, xmlValidationResult.Error ?? "Запрос не соответствует схеме"));
+            transaction.RiseCriticalError(new AnswerErrorCode(xmlValidationResult!.ErrorCode, xmlValidationResult.Error));
             return transaction;
         }
 
-        var requestV3 = xmlService.DeserializeV3<ЗапросСведенийV3>(transaction.Attachment.RequestBody);
+        ЗапросСведенийV3? requestV3;
+
+        try
+        {
+            requestV3 = xmlService.DeserializeV3<ЗапросСведенийV3>(transaction.Attachment.RequestBody);
+        }
+        catch(Exception ex)
+        {
+            transaction.RiseCriticalError(AnswerErrorCode.Code9_InvalidRequestByScheme(ex.Message));
+            return transaction;
+        }
+
         if (requestV3 is null)
         {
-            transaction.RiseCriticalError(Error.Code9_InvalidRequestByScheme());
+            transaction.RiseCriticalError(AnswerErrorCode.Code9_InvalidRequestByScheme("Не был десериализован в ЗапросСведений."));
             return transaction;
         }
 

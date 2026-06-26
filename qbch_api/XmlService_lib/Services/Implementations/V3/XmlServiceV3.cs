@@ -1,17 +1,15 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using QBCH.Lib.qcb_xml.v3_0;
+using qbch_lib.domain.errors;
 using QBCH_lib.CommonTypes.Api;
-using QBCH_lib.core;
 using System.Diagnostics.CodeAnalysis;
-using System.Xml.Schema;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
+using System.Xml.Schema;
 using System.Xml.Serialization;
 using XmlService_lib.Services.Interfaces.V3;
-using qbch_lib.domain.errors;
 
 namespace XmlService_lib.Services.Implementations.V3;
 
@@ -30,15 +28,27 @@ public class XmlServiceV3(IMemoryCache memoryCache, IConfiguration config, ILogg
         ["qcb_putanswer"] = ["qcb_putanswer.xsd", "qcb_common.xsd"]
     };
 
-    public T? DeserializeV3<T>(XDocument? xml) where T : class
+    public T? DeserializeV3<T>(XElement? xml) where T : class
     {
         if (xml is null)
             return null;
 
-        var serializer = CreateSerializerV3<T>();
+        var serializer = CreateSerializerV3<T>(xml.Name);
         using var reader = xml.CreateReader();
-        return serializer.Deserialize(reader) as T;
+
+        try
+        {
+            return serializer.Deserialize(reader) as T;
+        }
+        catch
+        {
+            return default;
+        }
     }
+
+    private static XmlSerializer CreateSerializerV3<T>(XName rootName) where T : class
+        => new(typeof(T), new XmlRootAttribute(rootName.LocalName) { Namespace = rootName.NamespaceName });
+
 
     public T? DeserializeV3<T>(byte[]? bytes) where T : class
     {
@@ -160,32 +170,32 @@ public class XmlServiceV3(IMemoryCache memoryCache, IConfiguration config, ILogg
 
             xDoc.Validate(schemaSet, (sender, e) =>
             {
-                var error = Error.Code9_InvalidRequestByScheme();
-                var reason = string.Concat(e.Severity, ": ", e.Message);
+                var error = AnswerErrorCode.Code9_InvalidRequestByScheme(string.Concat(e.Severity, ": ", e.Message));
 
-                _logger.LogError($"{error.Message}:\r\n{reason}");
+                _logger.LogError(error.Message);
 
-                xsdError = CreateSchemaError(error);
+                xsdError = CreateSchemaError(error.Code, error.Message);
             });
 
             return xsdError;
         }
         catch (Exception ex)
         {
-            var error = Error.Code99_OtherError(ex.Message);
-            return CreateSchemaError(error);
+            var error = AnswerErrorCode.Code9_InvalidRequestByScheme(ex.Message);
+            return CreateSchemaError(error.Code, error.Message);
         }
     }
 
-    private BaseResult CreateSchemaError(Error error) =>
-        new()
+   private static BaseResult CreateSchemaError(int errorCode, string errorMessage) =>
+       new()
         {
             IsError = true,
-            ErrorCode = error.Code,
-            Error = error.Message,
-            ErrorMessage = error.Message,
-        };
+           ErrorCode = errorCode,
+           Error = errorMessage,
+           ErrorMessage = errorMessage,
+       };
 
     private static XmlSerializer CreateSerializerV3<T>() where T : class
         => new(typeof(T));
+
 }

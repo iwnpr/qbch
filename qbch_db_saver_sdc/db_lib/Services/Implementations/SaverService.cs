@@ -20,7 +20,7 @@ namespace db_lib.Services.Implementations
     ICacheService cacheService,
     ILogger<SaverService> logger,
     IProducer<Null, string> producer,
-    IRepository repository,
+    IRepository repositoryV2,
     IRepositoryV3 repositoryV3,
     IConfiguration config,
     string? errorTopic) : ISaverService
@@ -30,7 +30,7 @@ namespace db_lib.Services.Implementations
         private readonly string? _errorTopic = errorTopic;
         private readonly IProducer<Null, string> _producer = producer;
         private readonly IRepositoryV3 _repositoryV3 = repositoryV3;
-        private readonly IRepository _repository = repository;
+        private readonly IRepository _repositoryV2 = repositoryV2;
         private readonly IEnumerable<string> BKIPSRNList = config.GetSection("QBCH").GetChildren().Select(x => x.GetValue<string>("Ogrn") ?? string.Empty);
         private readonly int _DlAnswerExpirationMin = config.GetValue<int>("RedisCache:QBCHRequestExpirationMin");
         private readonly int _DlPutExpirationMin = config.GetValue<int>("RedisCache:DlPutExpirationMin");
@@ -162,6 +162,14 @@ namespace db_lib.Services.Implementations
             var redisKey = key.Split(':');
             HashEntry[]? hashset = await _cacheService.TryGetHashAll(key);
 
+            if(hashset is null || hashset.Length == 0)
+                _logger.LogWarning("Не удалось найти ключ в кеше {key}", key);
+
+            if (hashset is not null)
+            {
+                _logger.LogDebug("Данные из Redis: {hashset}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")));
+            }
+
             switch (redisKey[1])
             {
                 case RequestTypeDlRequest:
@@ -174,8 +182,6 @@ namespace db_lib.Services.Implementations
                         {
                             if (await _repositoryV3.CreateDlRequestV3(key, hashset))
                             {
-                                await ProduceRequestXmlIfExists(hashset, key);
-
                                 await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
                                 return;
                             }
@@ -183,10 +189,8 @@ namespace db_lib.Services.Implementations
                         }
                         else
                         {
-                            if (await _repository.CreateDlRequest(key, hashset))
+                            if (await _repositoryV2.CreateDlRequest(key, hashset))
                             {
-                                await ProduceRequestXmlIfExists(hashset, key);
-
                                 await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
                                 return;
                             }
@@ -210,7 +214,7 @@ namespace db_lib.Services.Implementations
                         break;
                     }
 
-                    if (await _repository.CreateDlAnswer(key, hashset))
+                    if (await _repositoryV2.CreateDlAnswer(key, hashset))
                     {
                         await _cacheService.SetKeyExpirationInMinutes(key, _DlAnswerExpirationMin);
                         return;
@@ -259,6 +263,8 @@ namespace db_lib.Services.Implementations
 
                         if (hashset is not null)
                         {
+                            _logger.LogDebug("Данные из Redis: {hashset}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")));
+
                             var ErrorCode = (int)hashset.FirstOrDefault(x => x.Name == ErrorCodeField).Value;
 
                             if (!(ErrorCode == QbchErrorCodeWaitingResult && !hashset.Any(x => x.Name == QbchTasksEndDateTimeField)))
@@ -267,19 +273,14 @@ namespace db_lib.Services.Implementations
                                 {
                                     if (await _repositoryV3.CreateDlRequestV3(key, hashset))
                                     {
-
-                                        await ProduceRequestXmlIfExists(hashset, key);
-
                                         await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
                                         return;
                                     }
                                     break;
                                 }
 
-                                if (await _repository.CreateDlRequest(key, hashset))
+                                if (await _repositoryV2.CreateDlRequest(key, hashset))
                                 {
-                                    await ProduceRequestXmlIfExists(hashset, key);
-
                                     await _cacheService.ClearDLRequestHash(key, hashset, BKIPSRNList);
                                     return;
                                 }
@@ -299,6 +300,9 @@ namespace db_lib.Services.Implementations
 
                     if (hashset is not null)
                     {
+
+                        _logger.LogDebug("Данные из Redis: {hashset}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")));
+
                         if (IsV3(hashset))
                         {
                             if (await _repositoryV3.CreateDlAnswerV3(key, hashset))
@@ -308,7 +312,7 @@ namespace db_lib.Services.Implementations
                             }
                         }
 
-                        if (await _repository.CreateDlAnswer(key, hashset))
+                        if (await _repositoryV2.CreateDlAnswer(key, hashset))
                         {
                             await _cacheService.SetKeyExpirationInMinutes(key, _DlAnswerExpirationMin);
                             return;

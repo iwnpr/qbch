@@ -17,7 +17,6 @@ using QBCH_lib.domain.aggregate;
 using QBCH_lib.qcb_xml.v2_0.Enums;
 using QBCH_lib.Services.Interfaces;
 using QBCHService_lib.Services.Interfaces;
-using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using XmlService_lib.Services.Interfaces;
@@ -102,6 +101,7 @@ public class QBCHIIController(IMediator mediator,
 
         // Создание и валидация объекта transaction
         var transaction = await _mediator.Send(new CreateToValidateCommand(apiVersion, Request));
+
         _logger.LogDebug("{guid} Request: {dt}", transaction.Id, RequestTime);
         if (transaction.ProcessingErrors.Count != 0)
         {

@@ -237,15 +237,15 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
         client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
     });
 
-    var httpClientBuilderV3 = builder.Services.AddHttpClient($"{clientName}v3", client =>
-    {
-        client.BaseAddress = new Uri(urlv3);
-        client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
-    });
-
     var httpClientBuilderV2 = builder.Services.AddHttpClient($"{clientName}v2", client =>
     {
         client.BaseAddress = new Uri(urlv2);
+        client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
+    });
+
+    var httpClientBuilderV3 = builder.Services.AddHttpClient($"{clientName}v3", client =>
+    {
+        client.BaseAddress = new Uri(urlv3);
         client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
     });
 

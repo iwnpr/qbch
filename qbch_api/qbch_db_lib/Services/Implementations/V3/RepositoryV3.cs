@@ -3,11 +3,11 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
+using NRedisStack.Search;
 using Qbch_db_lib.Services.Interfaces.V3;
 using QBCH_lib.Configuration;
 using System.Data;
 using System.Security.Cryptography.X509Certificates;
-using System.Linq;
 using System.Xml.Linq;
 
 namespace Qbch_db_lib.Services.Implementations.V3;
@@ -38,6 +38,7 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
     private readonly int _antifraudTimeout = config.GetValue<int>("APIConfiguration:AntifraudCancelTimeoutMs", 5000);
     private readonly int _dbConnectDelayMs = config.GetValue<int>("APIConfiguration:DBConnectDelayMs");
     private readonly long _permissionsLifeTime = config.GetValue<long>("RedisCache:PermissionsLifeTimeMinutes");
+    private readonly long _requisitesLifeTime = config.GetValue<long>("RedisCache:RequisitesLifeTimeMinutes");
 
     private readonly string? _schemaQbchDbV3 = config.GetValue<string>("QbchDbV3:Schema");
     private readonly string? _schemaQbchSearchSubjectsV3 = config.GetValue<string>("QbchSearchSubjectsV3:Schema");
@@ -56,19 +57,96 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
     public async Task<List<long>> GetSearchAllSubjectsV3(string request, long? timeLeftMs = null)
     {
         var procName = _config.GetValue<string>("QbchSearchSubjectsV3:Procedures:SearchAllSubjects");
+
         if (string.IsNullOrWhiteSpace(request) || string.IsNullOrWhiteSpace(procName) || string.IsNullOrWhiteSpace(_schemaQbchSearchSubjectsV3))
-        {
             return [];
-        }
+
+        _logger.LogDebug("XML для поиска субъектов ({Proc}): {Xml}", procName, request);
 
         var sql = $"SELECT {_schemaQbchSearchSubjectsV3}.{procName}(@request)";
-        var value = await ExecuteScalarAsync(sql, procName, _searchSubjectsConnectionPool, timeLeftMs ?? _searchSubjectsTimeout, cmd =>
-        {
-            cmd.Parameters.AddWithValue("request", NpgsqlDbType.Xml, request);
-        });
 
-        return value as List<long> ?? [];
+        //NOTE: Убрал передачу ConnectionPool, так как его можно получить внутри метода. Также убрал передачу параметров процедуры. Это хорошо для универсального метода, а здесь это ухудшает читабельность кода.
+        var subjects = await ExecuteSubjectIdsAsync(sql, procName, timeLeftMs ?? _searchSubjectsTimeout, request);
+
+        _logger.LogDebug("Кол-во субъектов - {SubjectCount}. Запрос: ({Proc}): {Xml}", subjects.Count, procName, request);
+
+        return subjects;
     }
+
+    //NOTE: Второй параметр, как я понял, это все же имя процедуры, а не столбца
+    private async Task<List<long>> ExecuteSubjectIdsAsync(string sql, string procName, long timeoutMs, string request)
+    {
+        var result = new List<long>();
+
+        if (_searchSubjectsConnectionPool.Length == 0)
+        {
+            return result;
+        }
+
+        //NOTE: Смысл логики двух CancellationToken'ов у Артема я не понял. Решил не возвращать.
+        using (var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs)))
+
+            while (!cts.Token.IsCancellationRequested)
+            {
+                for (var i = 0; i < _searchSubjectsConnectionPool.Length; i++)
+                {
+                    using var connection = new NpgsqlConnection(_searchSubjectsConnectionPool[i]);
+                    try
+                    {
+                        await connection.OpenAsync(cts.Token);
+                        using var cmd = new NpgsqlCommand(sql, connection);
+                        cmd.Parameters.AddWithValue("request", NpgsqlDbType.Xml, request);
+
+                        _logger.LogDebug("Выполняется процедура поиска субъектов. PoolIndex={PoolIndex}", i);
+
+                        using var reader = await cmd.ExecuteReaderAsync(cts.Token);
+                        while (await reader.ReadAsync(cts.Token))
+                        {
+                            //NOTE: Вернул код Артема
+                            result = (await reader.IsDBNullAsync(reader.GetOrdinal(procName)) ? null : reader.GetFieldValue<List<long>>(reader.GetOrdinal(procName))) ?? new();   //GetString();
+                        }
+                        _logger.LogDebug(
+                                "Результат процедуры. ProcedureName={ProcName},  ParsedSubjectIds={@SubjectIds}, Count={Count}",
+                                procName,
+                                result,
+                                result.Count);
+
+                        //NOTE: Зачем здесь Distinct? У Артема его нет.
+                        //var distinctResult = result.Distinct().ToList();
+
+                        //_logger.LogDebug(
+                        //    "Итоговый результат процедуры поиска субъектов. SubjectIds={@SubjectIds}, Count={Count}",
+                        //    distinctResult,
+                        //    distinctResult.Count);
+
+                        return result;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogCritical(ex, "Ошибка процедуры {OperationName}.", nameof(GetSearchAllSubjectsV3));
+                        await Task.Delay(_dbConnectDelayMs, cts.Token);
+                    }
+                    finally
+                    {
+                        if (connection.State != ConnectionState.Closed)
+                        {
+                            await connection.CloseAsync();
+                        }
+                    }
+                }
+            }
+        //NOTE: Тут какой-то совсем странный код с Distinct'ом
+        //var timeoutResult = result.Distinct().ToList();
+
+        _logger.LogWarning(
+            "Таймаут выполнения процедуры поиска субъектов. Частичный результат: SubjectIds={@SubjectIds}, Count={Count}",
+            result,
+            result.Count);
+
+        return result;
+    }
+
+    //NOTE: Убрал метод, ненужный после возвращения кода Артема
 
     /// <summary>
     /// Возвращает блок обязательств (АМП) по списку субъектов.
@@ -78,15 +156,25 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
     /// <returns>XML с обязательствами для прямого маппинга в ответ 3.0.</returns>
     public async Task<XElement?> GetCalculationOfAmpV3(List<long> subjectIds, long? timeLeftMs = null)
     {
-        var xml = await ExecuteXmlProcedureV3(
-            _config.GetValue<string>("QbchCalcOfAmpV3:Procedures:CalculationOfAmp"),
-            _schemaQbchCalcOfAmpV3,
-            _calcOfAmpConnectionPool,
-            subjectIds,
-            timeLeftMs ?? _calcOfAmpTimeout,
-            "CalculationOfAmpV3");
+        var procName = _config.GetValue<string>("QbchCalcOfAmpV3:Procedures:CalculationOfAmp");
 
-        return ApplyFourDayWindowForContracts(xml);
+        if (string.IsNullOrWhiteSpace(procName) || string.IsNullOrWhiteSpace(_schemaQbchCalcOfAmpV3) || subjectIds.Count == 0)
+        {
+            return null;
+        }
+
+        var sql = $"SELECT {_schemaQbchCalcOfAmpV3}.{procName}(@subj_id)";
+        var value = await ExecuteScalarAsync(sql, procName, _calcOfAmpConnectionPool, timeLeftMs ?? _calcOfAmpTimeout, cmd =>
+        {
+            cmd.Parameters.AddWithValue("subj_id", NpgsqlDbType.Array | NpgsqlDbType.Bigint, subjectIds);
+        }, nameof(GetCalculationOfAmpV3));
+
+        if (value is string xml && !string.IsNullOrWhiteSpace(xml))
+        {
+            return XElement.Parse(xml);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -95,32 +183,68 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
     /// <param name="subjectIds">Идентификаторы субъектов.</param>
     /// <param name="timeLeftMs">Оставшееся время выполнения, мс.</param>
     /// <returns>XML с блоком самозапрета для прямого маппинга в ответ 3.0.</returns>
-    public Task<XElement?> GetSelfProhibitionV3(List<long> subjectIds, long? timeLeftMs = null)
-        => ExecuteXmlProcedureV3(
-            _config.GetValue<string>("QbchSelfProhibitionV3:Procedures:GetSelfProhibition"),
-            _schemaQbchSelfProhibitionV3,
-            _selfProhibitionConnectionPool,
-            subjectIds,
-            timeLeftMs ?? _selfProhibitionTimeout,
-            "GetSelfProhibitionV3");
+    public async Task<XElement?> GetSelfProhibitionV3(List<long> subjectIds, long? timeLeftMs = null)
+    {
+        var procName = _config.GetValue<string>("QbchSelfProhibitionV3:Procedures:GetSelfProhibition");
+
+        if (string.IsNullOrWhiteSpace(procName) || string.IsNullOrWhiteSpace(_schemaQbchSelfProhibitionV3) || subjectIds.Count == 0)
+        {
+            return null;
+        }
+
+        var sql = $"SELECT {_schemaQbchSelfProhibitionV3}.{procName}(@subj_id)";
+        var value = await ExecuteScalarAsync(sql, procName, _selfProhibitionConnectionPool, timeLeftMs ?? _selfProhibitionTimeout, cmd =>
+        {
+            cmd.Parameters.AddWithValue("subj_id", NpgsqlDbType.Array | NpgsqlDbType.Bigint, subjectIds);
+        }, nameof(GetSelfProhibitionV3));
+
+        if (value is string xml && !string.IsNullOrWhiteSpace(xml))
+        {
+            return XElement.Parse(xml);
+        }
+
+        return null;
+    }
 
     /// <summary>
-    /// Возвращает антифрод-записи по списку субъектов.
+    /// Возвращает антифрод-записи по дате рождения и ИНН субъекта.
     /// </summary>
-    /// <param name="subjectIds">Идентификаторы субъектов.</param>
+    /// <param name="birthDate">Дата рождения субъекта.</param>
+    /// <param name="inn">ИНН субъекта.</param>
     /// <param name="timeLeftMs">Оставшееся время выполнения, мс.</param>
     /// <returns>XML с антифрод-записями для прямого маппинга в ответ 3.0.</returns>
-    public async Task<XElement?> GetAntifraudV3(List<long> subjectIds, long? timeLeftMs = null)
+    public async Task<XElement?> GetAntifraudV3(DateTime birthDate, string inn, long? timeLeftMs = null)
     {
-        var xml = await ExecuteXmlProcedureV3(
-            _config.GetValue<string>("QbchAntifraudV3:Procedures:GetAntifraud"),
-            _schemaQbchAntifraudV3,
-            _antifraudConnectionPool,
-            subjectIds,
-            timeLeftMs ?? _antifraudTimeout,
-            "GetAntifraudV3");
+        var procName = _config.GetValue<string>("QbchAntifraudV3:Procedures:GetAntifraud");
 
-        return SelectAntifraudFields(xml);
+        if (string.IsNullOrWhiteSpace(procName) || string.IsNullOrWhiteSpace(inn))
+        {
+            return null;
+        }
+
+        var procedureFullName = procName.Contains('.') || string.IsNullOrWhiteSpace(_schemaQbchAntifraudV3)
+            ? procName
+            : $"{_schemaQbchAntifraudV3}.{procName}";
+
+        var resultColumn = procName.Contains('.')
+            ? procName[(procName.LastIndexOf('.') + 1)..]
+            : procName;
+
+        var sql = $"SELECT {procedureFullName}(@p_birth, @p_tax_num)";
+
+        var value = await ExecuteScalarAsync(sql, resultColumn, _antifraudConnectionPool, timeLeftMs ?? _antifraudTimeout, cmd =>
+        {
+                cmd.Parameters.AddWithValue("p_birth", NpgsqlDbType.Date, birthDate.Date);
+                cmd.Parameters.AddWithValue("p_tax_num", NpgsqlDbType.Text, inn);
+            },
+            nameof(GetAntifraudV3));
+
+        if (value is string xml && !string.IsNullOrWhiteSpace(xml))
+        {
+            return XElement.Parse(xml);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -145,34 +269,40 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
         if (string.IsNullOrWhiteSpace(normalizedServiceName))
             return false;
 
+        //NOTE: Вернул код Артема с обработками ошибкок redis'а.
         try
         {
-            if (_cacheService.TryGetHashValue(PermissionsCacheName, thumbprint, normalizedServiceName, out var cachedValue) && bool.TryParse(cachedValue.Value, out var cachedResult))
+            var foundInCache = _cacheService.TryGetHashValue(PermissionsCacheName, thumbprint, normalizedServiceName, out var cachedValue);
+
+            if (foundInCache && bool.TryParse(cachedValue.Value, out var cachedResult))
                 return cachedResult;
         }
         catch (Exception ex)
         {
-            _logger.LogCritical(ex, "При проверке кэша прав V3 из redis возникла ошибка.");
+            _logger.LogCritical(ex, "При проверке кэша прав из redis возникла ошибка.");
         }
+
+        _logger.LogDebug("В Redis не найдены права доступа для сертификата с отпечатком {thumbprint}", thumbprint);
 
         var sql = $"SELECT {_schemaQbchDbV3}.{procName}(@thumbprint, @serviceName)";
         var value = await ExecuteScalarAsync(sql, procName, _qbchDbConnectionPool, _qbchDbTimeout, cmd =>
         {
             cmd.Parameters.AddWithValue("thumbprint", thumbprint);
             cmd.Parameters.AddWithValue("serviceName", normalizedServiceName);
-        }, "IsPermissionGrantedV3", ct);
+        }, nameof(IsPermissionGrantedV3), ct);
 
         if (value is not bool result)
             return false;
 
         try
         {
+            //NOTE:странный код Артема с обработками ошибкок redis'а здесь решил не возвращать
             await _cacheService.AddHash(PermissionsCacheName, thumbprint, normalizedServiceName, result.ToString(), ct);
             await _cacheService.TrySetKeyExpiration(PermissionsCacheName, thumbprint, _permissionsLifeTime, ct);
         }
         catch (Exception ex)
         {
-            _logger.LogCritical(ex, "При установке кэша прав V3 в redis возникла ошибка.");
+            _logger.LogError(ex, "При установке прав V3 в redis возникла ошибка.");
         }
 
         return result;
@@ -190,6 +320,18 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
             return null;
         }
 
+        //NOTE: Вернул получение данных из redis'а
+        try
+        {
+            _cacheService.TryGetHashValue("requisites", thumbprint, "RequisitesXML", out var cachedValue);
+            if (cachedValue.HasValue && cachedValue.Value.HasValue)
+                return XElement.Parse(cachedValue.Value);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "При проверке кэша реквизитов из redis возникла ошибка.");
+        }
+
         var procName = _config.GetValue<string>("QbchDbV3:Procedures:GetInnOgrnByThumbprint");
         if (string.IsNullOrWhiteSpace(procName))
         {
@@ -202,9 +344,25 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
             cmd.Parameters.AddWithValue("thumbprint", thumbprint);
         }, "GetInnOgrnByThumbprintV3");
 
-        return value is string xml && !string.IsNullOrWhiteSpace(xml)
+        var result = value is string xml && !string.IsNullOrWhiteSpace(xml)
             ? XElement.Parse(xml)
             : null;
+
+        //NOTE: Вернул запись данных из redis'а
+        try
+        {
+            if (result is not null)
+            {
+                await _cacheService.AddHash("requisites", thumbprint, "RequisitesXML", result.ToString());
+                await _cacheService.TrySetKeyExpiration("requisites", thumbprint, _requisitesLifeTime);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "При установке кэша реквизитов в redis возникла ошибка.");
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -219,13 +377,40 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
             return null;
         }
 
+        //NOTE: Вернул получение данных из redis'а
+        try
+        {
+            _cacheService.TryGetHashValue("abonentId", psrn, "KeyId", out var cachedValue);
+
+            if (cachedValue.HasValue && cachedValue.Value.HasValue)
+                return int.Parse(cachedValue.Value);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "При проверке кэша abonentId в Redis, возникла ошибка.");
+        }
+
         var sql = $"SELECT key_id FROM {_schemaQbchDbV3}.tr_abonents WHERE ogrn = @psrn LIMIT 1";
         var value = await ExecuteFirstColumnAsync(sql, _qbchDbConnectionPool, _qbchDbTimeout, cmd =>
         {
             cmd.Parameters.AddWithValue("psrn", psrn);
         }, "GetAbonentKeyIdByPSRNV3");
 
-        return value as int?;
+        var result = value as int?;
+
+        try
+        {
+            if (result is not null)
+            {
+                await _cacheService.AddHash("abonentId", psrn, "KeyId", result.ToString());
+                await _cacheService.TrySetKeyExpiration("abonentId", psrn, _requisitesLifeTime);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "При установке кэша реквизитов в redis возникла ошибка.");
+        }
+        return result;
     }
 
     /// <summary>
@@ -240,12 +425,23 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
             return false;
         }
 
-        var certificate = new X509Certificate2(cert);
+        string thumbprint;
+        try
+        {
+            using var certificate = new X509Certificate2(cert);
+            thumbprint = certificate.Thumbprint ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Не удалось разобрать сертификат в {OperationName}.", nameof(IsCertExist));
+            return false;
+        }
+
         var sql = $"SELECT EXISTS(SELECT 1 FROM {_schemaQbchDbV3}.tr_abonent_certificates WHERE UPPER(thumbprint)=UPPER(@thumbprint))";
 
         var value = await ExecuteFirstColumnAsync(sql, _qbchDbConnectionPool, _qbchDbTimeout, cmd =>
         {
-            cmd.Parameters.AddWithValue("thumbprint", certificate.Thumbprint ?? string.Empty);
+            cmd.Parameters.AddWithValue("thumbprint", thumbprint);
         }, "IsCertExistV3");
 
         return value is bool boolValue && boolValue;
@@ -454,147 +650,6 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
         return value is bool b ? b : null;
     }
 
-    private async Task<XElement?> ExecuteXmlProcedureV3(
-        string? procName,
-        string? schema,
-        string[] connectionPool,
-        List<long> subjectIds,
-        long timeoutMs,
-        string operationName)
-    {
-        if (string.IsNullOrWhiteSpace(procName) || string.IsNullOrWhiteSpace(schema) || subjectIds.Count == 0)
-        {
-            return null;
-        }
-
-        var sql = $"SELECT {schema}.{procName}(@subj_id)";
-        var value = await ExecuteScalarAsync(sql, procName, connectionPool, timeoutMs, cmd =>
-        {
-            cmd.Parameters.AddWithValue("subj_id", NpgsqlDbType.Array | NpgsqlDbType.Bigint, subjectIds);
-        }, operationName);
-
-        if (value is string xml && !string.IsNullOrWhiteSpace(xml))
-        {
-            return XElement.Parse(xml);
-        }
-
-        return null;
-    }
-
-    private static XElement? ApplyFourDayWindowForContracts(XElement? source)
-    {
-        if (source is null)
-        {
-            return null;
-        }
-
-        var minDate = DateTime.UtcNow.Date.AddDays(-4);
-        var contracts = source.Descendants().Where(x => x.Name.LocalName == "Договор").ToList();
-
-        foreach (var contract in contracts)
-        {
-            var terminationDateNode = contract.Elements().FirstOrDefault(x => x.Name.LocalName == "ДатаПрекращения");
-            if (terminationDateNode is null || string.IsNullOrWhiteSpace(terminationDateNode.Value))
-            {
-                continue;
-            }
-
-            var rawTerminationDate = terminationDateNode.Value.Trim();
-            if (!DateTime.TryParse(rawTerminationDate, out var terminationDate) || terminationDate.Date >= minDate)
-            {
-                continue;
-            }
-
-            contract.Remove();
-        }
-
-        return source;
-    }
-
-    private static XElement? SelectAntifraudFields(XElement? source)
-    {
-        if (source is null)
-        {
-            return null;
-        }
-
-        var result = new XElement(source.Name.Namespace + "Антифрод");
-        var applications = source.Descendants().Where(x => x.Name.LocalName == "ОбращениеОбязательство");
-
-        foreach (var app in applications)
-        {
-            var row = new XElement(source.Name.Namespace + "ОбращениеОбязательство");
-            AddFieldIfExists(app, row, "КодИсточника");
-            AddFieldIfExists(app, row, "СтадияРассмотрения");
-            AddFieldIfExists(app, row, "ДатаСтадии");
-            AddFieldIfExists(app, row, "СуммаЗайма");
-            AddAllFieldsIfExists(app, row, "ПричинаОтказа");
-            AddFieldIfExists(app, row, "УИД");
-            result.Add(row);
-        }
-
-        return result;
-    }
-
-    private static void AddFieldIfExists(XElement source, XElement target, string fieldName)
-    {
-        var node = source.Elements().FirstOrDefault(x => x.Name.LocalName == fieldName);
-        if (node is not null)
-        {
-            target.Add(new XElement(target.Name.Namespace + fieldName, node.Value));
-        }
-    }
-
-    private static void AddAllFieldsIfExists(XElement source, XElement target, string fieldName)
-    {
-        var nodes = source.Elements().Where(x => x.Name.LocalName == fieldName).ToList();
-        if (nodes.Count == 0)
-        {
-            return;
-        }
-
-        foreach (var node in nodes)
-        {
-            target.Add(new XElement(target.Name.Namespace + fieldName, node.Value));
-        }
-    }
-
-    private static XElement? NormalizeCreditHistoryPresenceFlag(XElement? source)
-    {
-        if (source is null)
-        {
-            return null;
-        }
-
-        var node = source.Descendants().FirstOrDefault(x => x.Name.LocalName is "ПризнакНаличияКИ" or "CreditHistoryPresenceFlag");
-        if (node is null || string.IsNullOrWhiteSpace(node.Value))
-        {
-            return null;
-        }
-
-        var value = node.Value.Trim();
-        var normalizedValue = value;
-        if (bool.TryParse(value, out var boolValue))
-        {
-            normalizedValue = boolValue ? "1" : "0";
-        }
-        else
-        {
-            normalizedValue = value.ToLowerInvariant() switch
-            {
-                "item1" => "1",
-                "item0" => "0",
-                "1" => "1",
-                "0" => "0",
-                _ => value
-            };
-        }
-
-        var ns = source.Name.Namespace;
-        return new XElement(ns + "СведенияКИ",
-            new XElement(ns + "ПризнакНаличияКИ", normalizedValue));
-    }
-
     private static string? NormalizeServiceNameForAccessCheck(string serviceName)
     {
         var normalized = serviceName.Split('?', 2)[0].Trim().Trim('/').ToLowerInvariant();
@@ -672,7 +727,7 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
                 catch (Exception ex)
                 {
                     _logger.LogCritical(ex, "Ошибка процедуры {OperationName}.", operationName ?? resultColumn);
-                    await Task.Delay(_dbConnectDelayMs, cts.Token);
+                    await Task.Delay(_dbConnectDelayMs);
                 }
                 finally
                 {
@@ -723,7 +778,7 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
                 catch (Exception ex)
                 {
                     _logger.LogCritical(ex, "Ошибка запроса {OperationName}.", operationName);
-                    await Task.Delay(_dbConnectDelayMs, cts.Token);
+                    await Task.Delay(_dbConnectDelayMs);
                 }
                 finally
                 {
@@ -767,7 +822,7 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
                 catch (Exception ex)
                 {
                     _logger.LogCritical(ex, "Ошибка запроса {OperationName}.", operationName);
-                    await Task.Delay(_dbConnectDelayMs, cts.Token);
+                    await Task.Delay(_dbConnectDelayMs);
                 }
                 finally
                 {

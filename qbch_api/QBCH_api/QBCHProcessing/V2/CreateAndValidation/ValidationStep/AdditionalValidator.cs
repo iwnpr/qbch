@@ -63,10 +63,10 @@ public static class AdditionalValidator
                 switch (transaction.ClentRequest.Request.РежимЗапроса)
                 {
                     case СправочникРежимыЗапроса.Single:
-                        transaction.RiseCriticalError(Error.Code15_InvalidRequestData(er));
+                        transaction.RiseCriticalError(AnswerErrorCode.Code15_InvalidRequestData(er));
                         break;
                     case СправочникРежимыЗапроса.Package:
-                        transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, Error.Code15_InvalidRequestData(er));
+                        transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, AnswerErrorCode.Code15_InvalidRequestData(er));
                         break;
                 }
 
@@ -87,10 +87,10 @@ public static class AdditionalValidator
                 switch (transaction.ClentRequest.Request.РежимЗапроса)
                 {
                     case СправочникРежимыЗапроса.Single:
-                        transaction.RiseCriticalError(Error.Code15_InvalidRequestData(er));
+                        transaction.RiseCriticalError(AnswerErrorCode.Code15_InvalidRequestData(er));
                         break;
                     case СправочникРежимыЗапроса.Package:
-                        transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, Error.Code15_InvalidRequestData(er));
+                        transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, AnswerErrorCode.Code15_InvalidRequestData(er));
                         break;
                 }
             }
@@ -109,10 +109,10 @@ public static class AdditionalValidator
                 switch (transaction.ClentRequest.Request.РежимЗапроса)
                 {
                     case СправочникРежимыЗапроса.Single:
-                        transaction.RiseCriticalError(Error.Code15_InvalidRequestData(er));
+                        transaction.RiseCriticalError(AnswerErrorCode.Code15_InvalidRequestData(er));
                         break;
                     case СправочникРежимыЗапроса.Package:
-                        transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, Error.Code15_InvalidRequestData(er));
+                        transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, AnswerErrorCode.Code15_InvalidRequestData(er));
                         break;
                 }
             }
@@ -133,10 +133,10 @@ public static class AdditionalValidator
                     switch (transaction.ClentRequest.Request.РежимЗапроса)
                     {
                         case СправочникРежимыЗапроса.Single:
-                            transaction.RiseCriticalError(Error.Code15_InvalidRequestData(er));
+                            transaction.RiseCriticalError(AnswerErrorCode.Code15_InvalidRequestData(er));
                             break;
                         case СправочникРежимыЗапроса.Package:
-                            transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, Error.Code15_InvalidRequestData(er));
+                            transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, AnswerErrorCode.Code15_InvalidRequestData(er));
                             break;
                     }
                 }
@@ -154,15 +154,18 @@ public static class AdditionalValidator
                 var creditTargets = new[]
                 {
                     ТипЦельКодЦели.Item1,
+                    ТипЦельКодЦели.Item11,
                     ТипЦельКодЦели.Item2,
                     ТипЦельКодЦели.Item3,
                     ТипЦельКодЦели.Item4,
                     ТипЦельКодЦели.Item5,
                     ТипЦельКодЦели.Item10,
-                    ТипЦельКодЦели.Item11,
+                    ТипЦельКодЦели.Item111,
                     ТипЦельКодЦели.Item12,
                     ТипЦельКодЦели.Item13,
+                    ТипЦельКодЦели.Item131,
                     ТипЦельКодЦели.Item14,
+                    ТипЦельКодЦели.Item141,
                     ТипЦельКодЦели.Item15
                 };
                 bool HasCreditTarget = false;
@@ -183,10 +186,10 @@ public static class AdditionalValidator
                         switch (transaction.ClentRequest.Request.РежимЗапроса)
                         {
                             case СправочникРежимыЗапроса.Single:
-                                transaction.RiseCriticalError(Error.Code15_InvalidRequestData(er));
+                                transaction.RiseCriticalError(AnswerErrorCode.Code15_InvalidRequestData(er));
                                 break;
                             case СправочникРежимыЗапроса.Package:
-                                transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, Error.Code15_InvalidRequestData(er));
+                                transaction.SetPacakgeValidationError(запросСведений.ПорядковыйНомер, AnswerErrorCode.Code15_InvalidRequestData(er));
                                 break;
                         }
                     }

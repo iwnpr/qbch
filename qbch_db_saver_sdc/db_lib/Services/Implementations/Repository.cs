@@ -19,9 +19,9 @@ using Xml_service_lib;
 
 namespace db_lib.Services.Implementations
 {
-    public class Repository(QbchV3Context context, ICacheService cacheService, ILogger<Repository> logger, IXmlService xmlService, IBKIRequisitsHandler requisits) : IRepository
+    public class Repository(QbchContext context, ICacheService cacheService, ILogger<Repository> logger, IXmlService xmlService, IBKIRequisitsHandler requisits) : IRepository
     {
-        private readonly QbchV3Context _context = context;
+        private readonly QbchContext _context = context;
         private readonly ICacheService _cacheService = cacheService;
         private readonly ILogger<Repository> _logger = logger;
         private readonly IXmlService _xmlService = xmlService;
@@ -589,13 +589,10 @@ namespace db_lib.Services.Implementations
 
         public async Task<bool> CreateDlRequest(string HaskKey, HashEntry[]? hashset)
         {
-            // Читаем хэш из редиса
-            //HashEntry[]? hashset = await _cacheService.TryGetHashAll(HaskKey);
-
             // Провекра что хэш считан
             if (hashset is null)
             {
-                _logger.LogCritical("не удалось считать данные из Redis");
+                _logger.LogCritical("Не удалось считать данные из Redis: {hashset}", hashset);
                 return false;
             }
 
@@ -603,7 +600,7 @@ namespace db_lib.Services.Implementations
 
             if (ЗапросСведений is null)
             {
-                _logger.LogWarning($"не удалось считать данные блока {nameof(ЗапросСведений)}");
+                _logger.LogWarning($"Не удалось считать данные блока {nameof(ЗапросСведений)}");
             }
 
             var requestlist = ЗапросСведений?.Запрос.Select(x => x.ПорядковыйНомер);
@@ -618,7 +615,7 @@ namespace db_lib.Services.Implementations
 
                 RequestCertificateData = hashset.FirstOrDefault(x => x.Name == "request_certificate_data").Value,
                 RequestCertificateThumbprint = hashset.FirstOrDefault(x => x.Name == "request_certificate_thumbprint").Value.ToString(),
-                RequestDateTime = DateTime.ParseExact(hashset.FirstOrDefault(x => x.Name == "request_date_time").Value!, "dd.MM.yyyy HH:mm:ss:ffff", CultureInfo.InvariantCulture, DateTimeStyles.None),
+                RequestDateTime = GetDateTimeValue(hashset.FirstOrDefault(x => x.Name == "request_date_time").Value.ToString()) ?? DateTime.Now,
                 RequestSignedData = hashset.FirstOrDefault(x => x.Name == "request_signed_data").Value,
                 RequestXml = TryParseXmlBytesToString(hashset.FirstOrDefault(x => x.Name == "request_xml").Value),
 
@@ -635,7 +632,7 @@ namespace db_lib.Services.Implementations
                 QbchTasksResultXml = TryParseXmlBytesToString(hashset.FirstOrDefault(x => x.Name == "qbch_tasks_aggregate_xml").Value),
 
                 ResponseSignedData = hashset.FirstOrDefault(x => x.Name == "response_signed_data").Value,
-                ResponseDateTime = GetDateTimeValue(hashset.FirstOrDefault(x => x.Name == "response_date_time").Value.ToString()),
+                ResponseDateTime = GetDateTimeValue(hashset.FirstOrDefault(x => x.Name == "response_date_time").Value.ToString()) ?? DateTime.Now,
                 ResponseXml = TryParseXmlBytesToString(hashset.FirstOrDefault(x => x.Name == "response_xml").Value)
             };
 
@@ -671,7 +668,7 @@ namespace db_lib.Services.Implementations
             // Провекра что хэш считан
             if (hashset is null)
             {
-                _logger.LogCritical("не удалось считать данные из Redis");
+                _logger.LogCritical("Не удалось считать данные из Redis: {hashset}", hashset);
                 return false;
             }
 
@@ -684,7 +681,7 @@ namespace db_lib.Services.Implementations
                 RequestCertificateThumbprint = hashset.FirstOrDefault(x => x.Name == "request_certificate_thumbprint").Value.ToString(),
                 RequestCertificateData = hashset.FirstOrDefault(x => x.Name == "request_certificate_data").Value,
                 AbonentId = trAbonent?.KeyId,
-                RequestDateTime = DateTime.ParseExact(hashset.FirstOrDefault(x => x.Name == "request_date_time").Value!, "dd.MM.yyyy HH:mm:ss:ffff", CultureInfo.InvariantCulture, DateTimeStyles.None),
+                RequestDateTime = GetDateTimeValue(hashset.FirstOrDefault(x => x.Name == "request_date_time").Value.ToString()) ?? DateTime.Now,
                 ValidationDateTime = GetDateTimeValue(hashset.FirstOrDefault(x => x.Name == "validation_date_time").Value.ToString()),
                 ResponseDateTime = (DateTime)GetDateTimeValue(hashset.FirstOrDefault(x => x.Name == "response_date_time").Value.ToString())!,
                 ErrorMessage = hashset.FirstOrDefault(x => x.Name == "error_message").Value,

@@ -1,10 +1,18 @@
-﻿using QBCH_lib.domain.aggregate;
+﻿using Org.BouncyCastle.Asn1.Ocsp;
+using QBCH.Lib.qcb_xml.v3_0;
+using qbch_lib.domain.errors;
+using QBCH_lib.domain.aggregate;
+using Serilog.Core;
+using ЗапросСведенийV3 = QBCH.Lib.qcb_xml.v3_0.ЗапросСведений;
+using ЗапросСведенийЗапросV3 = QBCH.Lib.qcb_xml.v3_0.ЗапросСведенийЗапрос;
 using СправочникВидыСведенийV3 = QBCH.Lib.qcb_xml.v3_0.СправочникВидыСведений;
 using СправочникРежимыЗапросаV3 = QBCH.Lib.qcb_xml.v3_0.СправочникРежимыЗапроса;
 using СправочникСрокиСогласияV3 = QBCH.Lib.qcb_xml.v3_0.СправочникСрокиСогласия;
-using ЗапросСведенийV3 = QBCH.Lib.qcb_xml.v3_0.ЗапросСведений;
-using ЗапросСведенийЗапросV3 = QBCH.Lib.qcb_xml.v3_0.ЗапросСведенийЗапрос;
-using qbch_lib.domain.errors;
+using ТипИПV3 = QBCH.Lib.qcb_xml.v3_0.ТипИП;
+using ТипИПБазовыйV3 = QBCH.Lib.qcb_xml.v3_0.ТипИПБазовый;
+using ТипСогласиеV3 = QBCH.Lib.qcb_xml.v3_0.ТипСогласие;
+using ТипЮЛV3 = QBCH.Lib.qcb_xml.v3_0.ТипЮЛ;
+using ТипЮЛБазовыйV3 = QBCH.Lib.qcb_xml.v3_0.ТипЮЛБазовый;
 
 namespace QBCH_api.QBCHProcessing.V3.CreateAndValidation.ValidationStep;
 
@@ -61,7 +69,7 @@ public static class ConsentValidatorV3
         {
             if (requiresAgreement)
             {
-                AddError(transaction, requestV3.РежимЗапроса, orderNumber, Error.Code27_СonsentIsNull());
+                AddError(transaction, requestV3.РежимЗапроса, orderNumber, AnswerErrorCode.Code27_СonsentIsNull());
             }
 
             return;
@@ -70,7 +78,14 @@ public static class ConsentValidatorV3
         if (agreement.ДатаВыдачи > DateTime.Today)
         {
             AddError(transaction, requestV3.РежимЗапроса, orderNumber,
-                Error.Code13_СonsentDenied($"Дата выдачи согласия {agreement.ДатаВыдачи:dd.MM.yyyy} больше текущей даты"));
+                AnswerErrorCode.Code13_СonsentDenied($"Отсутствует действующее согласие Субъекта: Дата выдачи согласия {agreement.ДатаВыдачи:dd.MM.yyyy} больше текущей даты"));
+            return;
+        }
+
+        ValidateTransferringToAnotherPerson(transaction, requestV3.РежимЗапроса, requestItem, agreement, orderNumber);
+
+        if (HasError(transaction, requestV3.РежимЗапроса, orderNumber))
+        {
             return;
         }
 
@@ -80,7 +95,7 @@ public static class ConsentValidatorV3
                 if (DateTime.Today >= agreement.ДатаВыдачи.AddMonths(6).AddDays(1))
                 {
                     AddError(transaction, requestV3.РежимЗапроса, orderNumber,
-                        Error.Code13_СonsentDenied("Дата окончания действия согласия (дата выдачи + 6 месяцев) меньше текущей даты"));
+                        AnswerErrorCode.Code13_СonsentDenied("Отсутствует действующее согласие Субъекта: Дата окончания действия согласия (дата выдачи + 6 месяцев) меньше текущей даты"));
                 }
 
                 return;
@@ -89,16 +104,30 @@ public static class ConsentValidatorV3
                 if (DateTime.Today >= agreement.ДатаВыдачи.AddMonths(12).AddDays(1))
                 {
                     AddError(transaction, requestV3.РежимЗапроса, orderNumber,
-                        Error.Code13_СonsentDenied("Дата окончания действия согласия (дата выдачи + 12 месяцев) меньше текущей даты"));
+                        AnswerErrorCode.Code13_СonsentDenied("Отсутствует действующее согласие Субъекта: Дата окончания действия согласия (дата выдачи + 12 месяцев) меньше текущей даты"));
                 }
+                var contractDate = request?.Запрос?.Согласие?.Договор.Дата;
 
-                return;
+                // Дата выдачи согласия больше даты договора
+                if (AgreementDate > contractDate)
+                {
+                    error = $"Дата выдачи согласия {AgreementDate:dd.MM.yyyy} больше даты договора {contractDate:dd.MM.yyyy}";
+                    logger.LogError("Дата выдачи согласия {AgreementDate} больше даты договора {contractDate}", AgreementDate?.ToString("dd.MM.yyyy"), contractDate?.ToString("dd.MM.yyyy"));
+                    result = new()
+                    {
+                        Error = error,
+                        ErrorCode = 15,
+                        Ticket_v2 = ticketService.CreateResultV2(ResponseType.Error, "15", $"Запрос содержит некорректные данные: {error}")
+                    };
+
+
+                    return;
 
             case СправочникСрокиСогласияV3.Item3:
-                if (requiresAgreement && agreement.Договор is null)
+                if (agreement.Договор is null)
                 {
                     AddError(transaction, requestV3.РежимЗапроса, orderNumber,
-                        Error.Code15_InvalidRequestData("Элемент \"Договор\" обязателен, когда значение атрибута \"СрокДействия\" равно \"3\""));
+                        AnswerErrorCode.Code13_СonsentDenied("Отсутствует действующее согласие Субъекта: Элемент \"Договор\" обязателен, когда значение атрибута \"СрокДействия\" равно \"3\""));
                     return;
                 }
 
@@ -110,18 +139,135 @@ public static class ConsentValidatorV3
                 if (agreement.Договор is not null && agreement.Договор.Дата > DateTime.Today)
                 {
                     AddError(transaction, requestV3.РежимЗапроса, orderNumber,
-                        Error.Code13_СonsentDenied($"Дата договора {agreement.Договор.Дата:dd.MM.yyyy} больше текущей даты"));
+                        AnswerErrorCode.Code13_СonsentDenied($"Отсутствует действующее согласие Субъекта: Дата договора {agreement.Договор.Дата:dd.MM.yyyy} больше текущей даты"));
                 }
 
                 return;
         }
+
+        // Если у цели 99 нет описания
+        if (requestItem.Цель?.Any(x => x.КодЦели == ТипЦельКодЦели.Item99 && string.IsNullOrWhiteSpace(x.Описание)) ?? false)
+        {
+            AddError(transaction, requestV3.РежимЗапроса, orderNumber,
+                        AnswerErrorCode.Code15_InvalidRequestData($"Запрос содержит некорректные данные: Код цели запроса со значением \"99\" не содержит описания."));
+            return;
+        }
+
+        // Если в согласии у цели 99 нет описания
+        if (requestItem?.Согласие?.Цель?.Any(x => x.КодЦели == ТипЦельКодЦели.Item99 && string.IsNullOrWhiteSpace(x.Описание)) ?? false)
+        {
+            AddError(transaction, requestV3.РежимЗапроса, orderNumber,
+                        AnswerErrorCode.Code13_СonsentDenied($"Отсутствует действующее согласие Субъекта: Запрос содержит некорректные данные: Код цели согласия со значением \"99\" не содержит описания."));
+            return;
+        }
+
+        //  Проверка кодов цели запроса Одна или несколько целей запроса отсутствует в согласии
+        for (int i = 0; i < requestItem?.Цель?.Count(); i++)
+        {
+            if (!requestItem?.Согласие?.Цель?.Any(x => x.КодЦели == requestItem?.Цель[i].КодЦели) ?? false)
+            {
+                AddError(transaction, requestV3.РежимЗапроса, orderNumber,
+                        AnswerErrorCode.Code13_СonsentDenied($"Отсутствует действующее согласие Субъекта: Одна или несколько целей, указанных в блоке «Запрос» отсутствует."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Проверка соответствия реквизитов источника и лица, которому выдано согласие.
+    /// При наличии атрибута "ОснованиеПередачи" реквизиты должны различаться (согласие передано другому лицу),
+    /// при его отсутствии — совпадать (согласие выдано самому источнику).
+    /// </summary>
+    private static void ValidateTransferringToAnotherPerson(
+        QBCHProcessingTransaction transaction,
+        СправочникРежимыЗапросаV3 requestMode,
+        ЗапросСведенийЗапросV3 requestItem,
+        ТипСогласиеV3 agreement,
+        int orderNumber)
+    {
+        var (innAgreement, ogrnAgreement) = ExtractRequisites(agreement.Выдано?.Item);
+        var (innSource, ogrnSource) = ExtractRequisites(requestItem.Источник?.Item);
+
+        if (string.IsNullOrWhiteSpace(innAgreement))
+        {
+            AddError(transaction, requestMode, orderNumber,
+                AnswerErrorCode.Code13_СonsentDenied("Отсутствует действующее согласие Субъекта: В блоке \"Выдано\" отсутствуют реквизиты лица, которому было выдано согласие."));
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ogrnAgreement))
+        {
+            AddError(transaction, requestMode, orderNumber,
+                AnswerErrorCode.Code13_СonsentDenied("Отсутствует действующее согласие Субъекта: Отсутствуют реквизиты лица, которому было выдано согласие."));
+            return;
+        }
+
+        var compareInn = innAgreement == innSource;
+        var compareOgrn = ogrnAgreement == ogrnSource;
+
+        if (agreement.ОснованиеПередачиSpecified)
+        {
+            // Есть основание передачи — реквизиты источника и получателя согласия не должны совпадать.
+            if (compareInn)
+            {
+                AddError(transaction, requestMode, orderNumber, AnswerErrorCode.Code13_СonsentDenied(
+                    $"Отсутствует действующее согласие Субъекта: При наличии в согласии атрибута \"ОснованиеПередачи\" ИНН ({innAgreement}) лица, которому было выдано согласие, не должен совпадать с ИНН ({innSource}) источника."));
+                return;
+            }
+
+            if (compareOgrn)
+            {
+                AddError(transaction, requestMode, orderNumber, AnswerErrorCode.Code13_СonsentDenied(
+                    $"Отсутствует действующее согласие Субъекта: При наличии в согласии атрибута \"ОснованиеПередачи\" ОГРН лица ({ogrnAgreement}), которому было выдано согласие, не должен совпадать с ОГРН источника ({ogrnSource})."));
+                return;
+            }
+        }
+        else
+        {
+            // Основания передачи нет — согласие выдано самому источнику, реквизиты должны совпадать.
+            if (!compareInn)
+            {
+                AddError(transaction, requestMode, orderNumber, AnswerErrorCode.Code13_СonsentDenied(
+                    $"Отсутствует действующее согласие Субъекта: ИНН лица ({innAgreement}), которому было выдано согласие, должен совпадать с ИНН источника ({innSource})."));
+                return;
+            }
+
+            if (!compareOgrn)
+            {
+                AddError(transaction, requestMode, orderNumber, AnswerErrorCode.Code13_СonsentDenied(
+                    $"Отсутствует действующее согласие Субъекта: ОГРН ({ogrnAgreement}) лица, которому было выдано согласие, должен совпадать с ОГРН ({ogrnSource}) источника."));
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Извлекает ИНН и ОГРН из элемента источника/блока "Выдано" (российские ЮЛ и ИП).
+    /// Для иностранных лиц реквизиты ИНН/ОГРН отсутствуют.
+    /// </summary>
+    private static (string? inn, string? ogrn) ExtractRequisites(object? item) => item switch
+    {
+        ТипЮЛV3 ul => (ul.ИНН, ul.ОГРН),
+        ТипЮЛБазовыйV3 ul => (ul.ИНН, ul.ОГРН),
+        ТипИПV3 ip => (ip.ИННИП, ip.ОГРНИП),
+        ТипИПБазовыйV3 ip => (ip.ИННИП, ip.ОГРНИП),
+        _ => (null, null),
+    };
+
+    private static bool HasError(
+        QBCHProcessingTransaction transaction,
+        СправочникРежимыЗапросаV3 requestMode,
+        int orderNumber)
+    {
+        return requestMode == СправочникРежимыЗапросаV3.Item2
+            ? transaction.PackageValidationErrors.Any(x => x.Id == orderNumber)
+            : transaction.Status.Equals(QBCHProcessingStatus.Failure);
     }
 
     private static void AddError(
         QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         int orderNumber,
-        Error error)
+        AnswerErrorCode error)
     {
         if (requestMode == СправочникРежимыЗапросаV3.Item2)
         {

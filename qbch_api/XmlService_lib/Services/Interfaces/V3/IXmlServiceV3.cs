@@ -3,6 +3,7 @@ using QBCH_lib.core;
 using System.Diagnostics.CodeAnalysis;
 using System.Xml;
 using System.Xml.Linq;
+using System.Xml.Serialization;
 
 namespace XmlService_lib.Services.Interfaces.V3;
 
@@ -14,7 +15,7 @@ public interface IXmlServiceV3
     /// <typeparam name="T">Тип</typeparam>
     /// <param name="stream">Поток</param>
     /// <returns>Десериалиованный объект класса</returns>
-    T? DeserializeV3<T>(XDocument? xml) where T : class;
+    T? DeserializeV3<T>(XElement? xml) where T : class;
 
     /// <summary>
     /// Десериализация из xDocument
