@@ -15,6 +15,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
+using System.Xml.Serialization;
 using Xml_service_lib;
 
 namespace db_lib.Services.Implementations
@@ -587,6 +588,21 @@ namespace db_lib.Services.Implementations
             return default;
         }
 
+        private T? TryDeserialize<T>(byte[]? bytes) where T : class
+        {
+            if (bytes is null || bytes.Length == 0) return null;
+            try
+            {
+                using var ms = new MemoryStream(bytes);
+                return new XmlSerializer(typeof(T)).Deserialize(ms) as T;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Ошибка десериализации {Type}", typeof(T).Name);
+                return null;
+            }
+        }
+
         public async Task<bool> CreateDlRequest(string HaskKey, HashEntry[]? hashset)
         {
             // Провекра что хэш считан
@@ -596,11 +612,13 @@ namespace db_lib.Services.Implementations
                 return false;
             }
 
-            var ЗапросСведений = TryDeserialize<ЗапросСведений>(hashset.FirstOrDefault(x => x.Name == "request_xml").Value.ToString());
+            //var ЗапросСведений = TryDeserialize<ЗапросСведений>(hashset.FirstOrDefault(x => x.Name == "request_xml").Value.ToString());
+
+            var ЗапросСведений = TryDeserialize<ЗапросСведений>((byte[])hashset.FirstOrDefault(x => x.Name == "request_xml").Value);
 
             if (ЗапросСведений is null)
             {
-                _logger.LogWarning($"Не удалось считать данные блока {nameof(ЗапросСведений)}");
+                _logger.LogWarning("Не удалось считать данные блока {block}, {key}", nameof(ЗапросСведений), HaskKey);
             }
 
             var requestlist = ЗапросСведений?.Запрос.Select(x => x.ПорядковыйНомер);

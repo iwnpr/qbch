@@ -1,8 +1,6 @@
-﻿using Org.BouncyCastle.Asn1.Ocsp;
-using QBCH.Lib.qcb_xml.v3_0;
+﻿using QBCH.Lib.qcb_xml.v3_0;
 using qbch_lib.domain.errors;
 using QBCH_lib.domain.aggregate;
-using Serilog.Core;
 using ЗапросСведенийV3 = QBCH.Lib.qcb_xml.v3_0.ЗапросСведений;
 using ЗапросСведенийЗапросV3 = QBCH.Lib.qcb_xml.v3_0.ЗапросСведенийЗапрос;
 using СправочникВидыСведенийV3 = QBCH.Lib.qcb_xml.v3_0.СправочникВидыСведений;
@@ -106,22 +104,8 @@ public static class ConsentValidatorV3
                     AddError(transaction, requestV3.РежимЗапроса, orderNumber,
                         AnswerErrorCode.Code13_СonsentDenied("Отсутствует действующее согласие Субъекта: Дата окончания действия согласия (дата выдачи + 12 месяцев) меньше текущей даты"));
                 }
-                var contractDate = request?.Запрос?.Согласие?.Договор.Дата;
 
-                // Дата выдачи согласия больше даты договора
-                if (AgreementDate > contractDate)
-                {
-                    error = $"Дата выдачи согласия {AgreementDate:dd.MM.yyyy} больше даты договора {contractDate:dd.MM.yyyy}";
-                    logger.LogError("Дата выдачи согласия {AgreementDate} больше даты договора {contractDate}", AgreementDate?.ToString("dd.MM.yyyy"), contractDate?.ToString("dd.MM.yyyy"));
-                    result = new()
-                    {
-                        Error = error,
-                        ErrorCode = 15,
-                        Ticket_v2 = ticketService.CreateResultV2(ResponseType.Error, "15", $"Запрос содержит некорректные данные: {error}")
-                    };
-
-
-                    return;
+                return;
 
             case СправочникСрокиСогласияV3.Item3:
                 if (agreement.Договор is null)

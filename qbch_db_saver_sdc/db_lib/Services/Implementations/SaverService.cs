@@ -164,11 +164,8 @@ namespace db_lib.Services.Implementations
 
             if(hashset is null || hashset.Length == 0)
                 _logger.LogWarning("Не удалось найти ключ в кеше {key}", key);
-
-            if (hashset is not null)
-            {
-                _logger.LogDebug("Данные из Redis: {hashset}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")));
-            }
+            else
+                _logger.LogDebug("Данные из Redis: {hashset}, {key}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")), key);
 
             switch (redisKey[1])
             {
@@ -260,10 +257,12 @@ namespace db_lib.Services.Implementations
                     do
                     {
                         hashset = await _cacheService.TryGetHashAll(key);
-
+                        if(hashset is null || hashset.Length == 0)
+                            _logger.LogWarning("Не удалось найти ключ в кеше {key}", key);
+                        
                         if (hashset is not null)
                         {
-                            _logger.LogDebug("Данные из Redis: {hashset}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")));
+                            _logger.LogDebug("Данные из Redis: {hashset}, {key}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")), key);
 
                             var ErrorCode = (int)hashset.FirstOrDefault(x => x.Name == ErrorCodeField).Value;
 
@@ -297,11 +296,13 @@ namespace db_lib.Services.Implementations
 
                 case RequestTypeDlAnswer:
                     hashset = await _cacheService.TryGetHashAll(key);
-
+                    if(hashset is null || hashset.Length == 0)
+                        _logger.LogWarning("Не удалось найти ключ в кеше {key}", key);
+                    
                     if (hashset is not null)
                     {
 
-                        _logger.LogDebug("Данные из Redis: {hashset}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")));
+                        _logger.LogDebug("Данные из Redis: {hashset}, {key}", string.Join("; ", hashset.Select(x => $"{x.Name}={x.Value}")), key);
 
                         if (IsV3(hashset))
                         {

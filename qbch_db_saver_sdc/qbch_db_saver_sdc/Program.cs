@@ -82,10 +82,10 @@ else
         o.GetRequiredService<IConfiguration>(),
         errorTopic));
     services.AddScoped<ICacheService, CacheService>();
-    services.AddSingleton<IXmlService, XmlService>();
+    services.AddTransient<IXmlService, XmlService>();
     services.AddTransient<IRepositoryV3, RepositoryV3>();
     services.AddTransient<IRepository, Repository>();
-    services.AddSingleton<IBKIRequisitsHandler, BKIRequsits>();
+    services.AddTransient<IBKIRequisitsHandler, BKIRequsits>();
     services.AddLogging(builder => builder.AddSerilog(new LoggerConfiguration().ReadFrom.Configuration(configuration).CreateLogger()));
     services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(configuration.GetConnectionString("Redis")!));
 

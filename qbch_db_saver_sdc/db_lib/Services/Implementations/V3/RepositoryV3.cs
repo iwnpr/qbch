@@ -241,7 +241,7 @@ public class RepositoryV3(QbchContext context, ILogger<RepositoryV3> logger, IXm
         var request = TryDeserialize<ЗапросСведений>(requestXml);
 
         if (request is null)
-            _logger.LogError("Не удалось считать данные блока {block}", nameof(ЗапросСведений));
+            _logger.LogError("Не удалось считать данные блока {block}, {key}", nameof(ЗапросСведений), hashKey);
 
         var errorCode = int.TryParse(hashset.FirstOrDefault(x => x.Name == "error_code").Value.ToString(), out var parsedError) ? parsedError : 0;
         var trAbonent = await GetAbonentByThumbprint(hashset.FirstOrDefault(x => x.Name == "request_certificate_thumbprint").Value.ToString());
