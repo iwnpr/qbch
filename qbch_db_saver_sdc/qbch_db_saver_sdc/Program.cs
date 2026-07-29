@@ -68,11 +68,12 @@ else
 
     ServiceCollection services = new();
     services.AddSingleton(configuration);
+    
     services.AddDbContext<QbchContext>(o =>
     {
         o.UseNpgsql(connectionString: configuration.GetConnectionString("DataBase"));
-        //o.UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking);
     }, ServiceLifetime.Transient);
+
     services.AddTransient<ISaverService>(o => new SaverService(
         o.GetRequiredService<ICacheService>(),
         o.GetRequiredService<ILogger<SaverService>>(),
@@ -82,9 +83,11 @@ else
         o.GetRequiredService<IConfiguration>(),
         errorTopic));
     services.AddScoped<ICacheService, CacheService>();
-    services.AddTransient<IXmlService, XmlService>();
+    services.AddSingleton<IXmlService, XmlService>();
+
     services.AddTransient<IRepositoryV3, RepositoryV3>();
     services.AddTransient<IRepository, Repository>();
+
     services.AddTransient<IBKIRequisitsHandler, BKIRequsits>();
     services.AddLogging(builder => builder.AddSerilog(new LoggerConfiguration().ReadFrom.Configuration(configuration).CreateLogger()));
     services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(configuration.GetConnectionString("Redis")!));

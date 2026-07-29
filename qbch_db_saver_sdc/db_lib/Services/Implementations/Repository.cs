@@ -603,7 +603,7 @@ namespace db_lib.Services.Implementations
             }
         }
 
-        public async Task<bool> CreateDlRequest(string HaskKey, HashEntry[]? hashset)
+        public async Task<bool> CreateDlRequest(string HaskKey, HashEntry[]? hashset, bool checkAlreadySaved = false)
         {
             // Провекра что хэш считан
             if (hashset is null)
@@ -681,7 +681,7 @@ namespace db_lib.Services.Implementations
         }
 
 
-        public async Task<bool> CreateDlAnswer(string HaskKey, HashEntry[]? hashset)
+        public async Task<bool> CreateDlAnswer(string HaskKey, HashEntry[]? hashset, bool checkAlreadySaved = false)
         {
             // Провекра что хэш считан
             if (hashset is null)

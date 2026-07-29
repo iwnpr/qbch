@@ -6,6 +6,7 @@ using db_lib.Entities;
 //using db_lib.DBEntity;
 //using db_lib.Entity.CommonTypes.Api;
 using db_lib.Services.Implementations;
+using db_lib.Services.Implementations.V3;
 using db_lib.Services.Interfaces;
 using db_lib.Services.Interfaces.V3;
 using Microsoft.EntityFrameworkCore;
@@ -72,7 +73,10 @@ namespace qbch_db_saver_sdc
                 errorTopic));
             services.AddSingleton<ICacheService, CacheService>();
             services.AddSingleton<IXmlService, XmlService>();
+
+            services.AddTransient<IRepositoryV3, RepositoryV3>();
             services.AddTransient<IRepository, Repository>();
+
             services.AddSingleton<IBKIRequisitsHandler, BKIRequsits>();
             services.AddLogging(builder => builder.AddSerilog(new LoggerConfiguration().ReadFrom.Configuration(configuration).CreateLogger()));
             services.AddSingleton<IConnectionMultiplexer>(ConnectionMultiplexer.Connect(configuration.GetConnectionString("Redis")!));

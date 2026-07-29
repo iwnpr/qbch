@@ -230,7 +230,7 @@ public class RepositoryV3(QbchContext context, ILogger<RepositoryV3> logger, IXm
         }
     }
 
-    public async Task<bool> CreateDlRequestV3(string hashKey, HashEntry[]? hashset)
+    public async Task<bool> CreateDlRequestV3(string hashKey, HashEntry[]? hashset, bool checkAlreadySaved = false)
     {
         if (hashset is null)
         {
@@ -315,7 +315,7 @@ public class RepositoryV3(QbchContext context, ILogger<RepositoryV3> logger, IXm
         return await SaveAsync(hashKey);
     }
 
-    public async Task<bool> CreateDlAnswerV3(string hashKey, HashEntry[]? hashset)
+    public async Task<bool> CreateDlAnswerV3(string hashKey, HashEntry[]? hashset, bool checkAlreadySaved = false)
     {
         if (hashset is null)
         {
@@ -350,7 +350,7 @@ public class RepositoryV3(QbchContext context, ILogger<RepositoryV3> logger, IXm
         return await SaveAsync(hashKey);
     }
 
-    public async Task<bool> CreateDlPutV3(string hashKey, HashEntry[]? hashset)
+    public async Task<bool> CreateDlPutV3(string hashKey, HashEntry[]? hashset, bool checkAlreadySaved = false)
     {
         if (hashset is null)
         {
@@ -411,7 +411,7 @@ public class RepositoryV3(QbchContext context, ILogger<RepositoryV3> logger, IXm
         return await SaveAsync(hashKey);
     }
 
-    public async Task<bool> CreateDlPutAnswerV3(string hashKey, HashEntry[]? hashset)
+    public async Task<bool> CreateDlPutAnswerV3(string hashKey, HashEntry[]? hashset, bool checkAlreadySaved = false)
     {
         if (hashset is null)
         {
@@ -444,7 +444,7 @@ public class RepositoryV3(QbchContext context, ILogger<RepositoryV3> logger, IXm
         return await SaveAsync(hashKey);
     }
 
-    private async Task AddSubject(ЗапросСведенийЗапрос request, TeRequest teRequest)
+    private async Task AddSubject(Запрос request, TeRequest teRequest)
     {
         if (request.Субъект is null)
             return;
