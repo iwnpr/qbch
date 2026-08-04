@@ -1,12 +1,12 @@
 ﻿using Asp.Versioning;
 using MediatR;
-using QBCH_lib.domain.aggregate;
+using qbch_lib.domain.aggregate.V3;
 
 namespace QBCH_api.QBCHProcessing.V3.CreateAndValidation.Command;
 
 /// <summary>
-/// Команда создания и валидации транзакции API 3.0.
+/// Команда создания и валидации транзакции
 /// </summary>
 /// <param name="ApiVersion">Версия API.</param>
 /// <param name="Request">HTTP-запрос.</param>
-public sealed record CreateToValidateCommandV3(ApiVersion ApiVersion, HttpRequest Request) : IRequest<QBCHProcessingTransaction>;
+public sealed record CreateToValidateCommandV3(ApiVersion ApiVersion, HttpRequest Request) : IRequest<QBCHProcessingTransactionV3>;

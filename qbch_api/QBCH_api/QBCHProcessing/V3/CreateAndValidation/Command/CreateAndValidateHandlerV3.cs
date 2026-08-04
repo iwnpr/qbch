@@ -3,25 +3,25 @@ using Crypto_lib.Service;
 using MediatR;
 using QBCH_api.Services.Interfaces.V3;
 using Qbch_db_lib.Services.Interfaces.V3;
+using qbch_lib.domain.aggregate.V3;
+using qbch_lib.domain.entities;
 using QBCH_lib.CommonTypes.Api;
-using QBCH_lib.domain.aggregate;
 using QBCH_lib.domain.entities;
 using XmlService_lib.Services.Interfaces.V3;
 
 namespace QBCH_api.QBCHProcessing.V3.CreateAndValidation.Command;
 
 /// <summary>
-/// Создание и валидация транзакции для dlrequest API 3.0.
+/// Создание и валидация транзакции для dlrequest
 /// </summary>
-public sealed class CreateAndValidateHandlerV3(
+public sealed class CreateAndValidateHandler(
     IValidationServiceV3 validationService,
     ICryptoService cryptoService,
     IXmlServiceV3 xmlService,
     IRepositoryV3 repository,
     IKeyValueStorageService storageService,
     IBKIRequisitsHandler bKIRequisits,
-    ILogger<CreateAndValidateHandlerV3> logger)
-    : IRequestHandler<CreateToValidateCommandV3, QBCHProcessingTransaction>
+    ILogger<CreateAndValidateHandler> logger) : IRequestHandler<CreateToValidateCommandV3, QBCHProcessingTransactionV3>
 {
     private readonly IValidationServiceV3 _validationService = validationService;
     private readonly ICryptoService _cryptoService = cryptoService;
@@ -29,9 +29,9 @@ public sealed class CreateAndValidateHandlerV3(
     private readonly IRepositoryV3 _repository = repository;
     private readonly IKeyValueStorageService _storageService = storageService;
     private readonly IBKIRequisitsHandler _bKIRequisits = bKIRequisits;
-    private readonly ILogger<CreateAndValidateHandlerV3> _logger = logger;
+    private readonly ILogger<CreateAndValidateHandler> _logger = logger;
 
-    public async Task<QBCHProcessingTransaction> Handle(CreateToValidateCommandV3 request, CancellationToken cancellationToken)
+    public async Task<QBCHProcessingTransactionV3> Handle(CreateToValidateCommandV3 request, CancellationToken cancellationToken)
     {
         _logger.LogDebug("Начало создания и валидации транзакции v3. Method={Method}, Path={Path}", request.Request.Method, request.Request.Path);
         request.Request.EnableBuffering();
@@ -55,7 +55,7 @@ public sealed class CreateAndValidateHandlerV3(
 
         var requestBody = memoryStream.ToArray();
         var attachement = Attachment.Create(signedRequest: requestBody);
-        var transaction = QBCHProcessingTransaction.Create(DateTime.Now, clientRequest, attachement, _bKIRequisits.GetBureaList());
+        var transaction = QBCHProcessingTransactionV3.Create(DateTime.Now, clientRequest, attachement, _bKIRequisits.GetBureaList());
 
         var result = await transaction.ValidateV3(
             validationService: _validationService,

@@ -74,9 +74,7 @@ namespace Cache_lib.Implementations
                     pField == "SignedQBCHResponse" ||
                     pField == "request_certificate_data" ||
                     pField == "request_signed_data" ||
-                    pField == "response_signed_data" ||
-                    pField == "request_xml" ? pData : Encoding.UTF8.GetString(pData)) ]);
-
+                    pField == "response_signed_data" ? pData : Encoding.UTF8.GetString(pData)) ]); //TODO перенести
 
                 _logger.LogTrace("Redis add cache db key: {pGuid}", pKey);
             }

@@ -3,7 +3,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using NpgsqlTypes;
-using NRedisStack.Search;
 using Qbch_db_lib.Services.Interfaces.V3;
 using QBCH_lib.Configuration;
 using System.Data;
@@ -21,9 +20,6 @@ public class RepositoryV3(IConfiguration config, ILogger<RepositoryV3> logger, I
     private readonly IConfiguration _config = config;
     private readonly ILogger<RepositoryV3> _logger = logger;
     private readonly IKeyValueStorageService _cacheService = cacheService;
-
-    private readonly ApiV3ContractOptions _contractOptions = contractOptions;
-    private readonly ApiV3ContractRules _contractRules = contractRules;
 
     private readonly string[] _qbchDbConnectionPool = config.GetSection("ConnectionPoolV3:QbchDb").Get<string[]>() ?? [];
     private readonly string[] _searchSubjectsConnectionPool = config.GetSection("ConnectionPoolV3:QbchSearchSubjects").Get<string[]>() ?? [];

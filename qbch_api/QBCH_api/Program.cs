@@ -9,23 +9,15 @@ using KafkaService_lib.Services.Interfaces;
 using Microsoft.AspNetCore.Authentication.Certificate;
 using Microsoft.FeatureManagement;
 using Microsoft.OpenApi.Models;
-using QBCH_api.Services.Implementations;
 using QBCH_api.Services.Implementations.V3;
-using QBCH_api.Services.Interfaces;
 using QBCH_api.Services.Interfaces.V3;
-using Qbch_db_lib.Services.Implementations;
 using Qbch_db_lib.Services.Implementations.V3;
-using Qbch_db_lib.Services.Interfaces;
 using Qbch_db_lib.Services.Interfaces.V3;
 using QBCH_lib.CommonTypes.Api;
 using QBCH_lib.Configuration;
-using QBCH_lib.Services.Implementations;
 using QBCH_lib.Services.Implementations.V3;
-using QBCH_lib.Services.Interfaces;
 using QBCH_lib.Services.Interfaces.V3;
-using QBCHService_lib.Services.Implementations;
 using QBCHService_lib.Services.Implementations.V3;
-using QBCHService_lib.Services.Interfaces;
 using QBCHService_lib.Services.Interfaces.V3;
 using Serilog;
 using Serilog.Core;
@@ -34,8 +26,6 @@ using System.Reflection;
 using System.Security.Cryptography.X509Certificates;
 using XmlService_lib.Services.Implementations.V3;
 using XmlService_lib.Services.Interfaces.V3;
-using XmlService_lib.Services.Implementations;
-using XmlService_lib.Services.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
 var configuration = builder.Configuration;
@@ -90,14 +80,6 @@ builder.Services.AddSingleton<IBKIRequisitsHandler, BKIRequsits>();
 builder.Services.AddSingleton<IKafkaService, KafkaService>();
 
 
-// V_2.0
-builder.Services.AddTransient<IXmlService, XmlService>();
-builder.Services.AddTransient<IValidationService, ValidationService>();
-builder.Services.AddTransient<IRepository, Repository>();
-builder.Services.AddTransient<IQBCHService, QBCHService>();
-builder.Services.AddTransient<ITransformer, Transformer>();
-builder.Services.AddTransient<ITicketService, TicketService>();
-
 // V_3.0
 builder.Services.AddTransient<IXmlServiceV3, XmlServiceV3>();
 builder.Services.AddTransient<IValidationServiceV3, ValidationServiceV3>();
@@ -132,7 +114,7 @@ try
     if (!Enum.TryParse<X509FindType>(_findType, true, out var findType))
         findType = X509FindType.FindByThumbprint;
 
-    X509Store store = new(storeName, storeLocation);
+    using X509Store store = new(storeName, storeLocation);
     store.Open(OpenFlags.ReadOnly);
 
     if (string.IsNullOrWhiteSpace(_searchValue))
@@ -174,8 +156,6 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v3", new OpenApiInfo { Title = "API сервиса QBCH V3", Version = "v3.0" });
-    options.SwaggerDoc("v2", new OpenApiInfo { Title = "API сервиса QBCH V2", Version = "v2.0" });
-    options.SwaggerDoc("v1.3", new OpenApiInfo { Title = "API сервиса QBCH V1", Version = "v1.3" });
     options.EnableAnnotations();
     options.UseInlineDefinitionsForEnums();
 });
@@ -190,8 +170,6 @@ app.UseDeveloperExceptionPage();
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("v1.3/swagger.json", "API сервиса QBCH V1");
-    c.SwaggerEndpoint("v2/swagger.json", "API сервиса QBCH V2");
     c.SwaggerEndpoint("v3/swagger.json", "API сервиса QBCH V3");
 });
 app.MapControllers();
@@ -202,8 +180,6 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
 {
     var clientName = section.GetValue<string>("Name");
     var url = section.GetValue<string>("Url");
-    var urlv2 = section.GetValue<string>("Urlv2");
-    var urlv3 = section.GetValue<string>("Urlv3");
 
     if (string.IsNullOrWhiteSpace(clientName))
     {
@@ -211,41 +187,15 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
         throw new NullReferenceException();
     }
 
-    // Проверяем, что значение указано
     if (string.IsNullOrEmpty(url))
     {
-        serilog.Fatal("Отсутствует BaseAddress для http-клиента {clientName}.", clientName);
+        serilog.Fatal("Отсутствует BaseAddress для http-клиента: {clientName}.", clientName);
         throw new NullReferenceException();
     }
-
-    // Проверяем, что значение указано
-    if (string.IsNullOrEmpty(urlv2))
-    {
-        serilog.Fatal("Отсутствует BaseAddress для http-клиента v2: {clientName}.", clientName);
-        throw new NullReferenceException();
-    }
-
-    if (string.IsNullOrEmpty(urlv3))
-    {
-        serilog.Fatal("Отсутствует BaseAddress для http-клиента v3: {clientName}.", clientName);
-        throw new NullReferenceException();
-    }
-
-    var httpClientBuilder = builder.Services.AddHttpClient(clientName, client =>
-    {
-        client.BaseAddress = new Uri(url);
-        client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
-    });
-
-    var httpClientBuilderV2 = builder.Services.AddHttpClient($"{clientName}v2", client =>
-    {
-        client.BaseAddress = new Uri(urlv2);
-        client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
-    });
 
     var httpClientBuilderV3 = builder.Services.AddHttpClient($"{clientName}v3", client =>
     {
-        client.BaseAddress = new Uri(urlv3);
+        client.BaseAddress = new Uri(url);
         client.Timeout = TimeSpan.FromSeconds(httpClientTimeoutSeconds);
     });
 
@@ -259,7 +209,5 @@ static void AddHttpClientToFactory(WebApplicationBuilder builder, Logger serilog
         };
     }
 
-    httpClientBuilder.ConfigurePrimaryHttpMessageHandler(CreateCertificateHandler);
-    httpClientBuilderV2.ConfigurePrimaryHttpMessageHandler(CreateCertificateHandler);
     httpClientBuilderV3.ConfigurePrimaryHttpMessageHandler(CreateCertificateHandler);
 }
