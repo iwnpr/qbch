@@ -1,6 +1,6 @@
 ﻿using MediatR;
-using qbch_lib.domain.aggregate.V3;
+using QBCH_lib.domain.aggregate;
 
 namespace QBCH_api.QBCHProcessing.V3.StoreProcessingData.Event;
 
-public record QBCHProcessingCompleteV3(QBCHProcessingTransactionV3 Transaction) : INotification;
+public record QBCHProcessingCompleteV3(QBCHProcessingTransaction Transaction) : INotification;

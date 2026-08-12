@@ -1,6 +1,6 @@
 ﻿using Asp.Versioning;
 using MediatR;
-using qbch_lib.domain.aggregate.V3;
+using QBCH_lib.domain.aggregate;
 
 namespace QBCH_api.QBCHProcessing.V3.CreateAndValidation.Command;
 
@@ -9,4 +9,4 @@ namespace QBCH_api.QBCHProcessing.V3.CreateAndValidation.Command;
 /// </summary>
 /// <param name="ApiVersion">Версия API.</param>
 /// <param name="Request">HTTP-запрос.</param>
-public sealed record CreateToValidateCommandV3(ApiVersion ApiVersion, HttpRequest Request) : IRequest<QBCHProcessingTransactionV3>;
+public sealed record CreateToValidateCommand(ApiVersion ApiVersion, HttpRequest Request) : IRequest<QBCHProcessingTransaction>;

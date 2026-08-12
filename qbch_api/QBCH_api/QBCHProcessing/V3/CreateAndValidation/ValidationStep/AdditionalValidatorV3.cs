@@ -1,6 +1,6 @@
 ﻿using QBCH.Lib.qcb_xml.v3_0;
-using qbch_lib.domain.aggregate.V3;
 using qbch_lib.domain.errors;
+using QBCH_lib.domain.aggregate;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using ЗапросСведенийV3 = QBCH.Lib.qcb_xml.v3_0.ЗапросСведений;
@@ -36,8 +36,8 @@ public static class AdditionalValidatorV3
         ТипЦельКодЦелиV3.Item15
     ];
 
-    public static QBCHProcessingTransactionV3 AdditionalValidationV3(
-        this QBCHProcessingTransactionV3 transaction,
+    public static QBCHProcessingTransaction AdditionalValidationV3(
+        this QBCHProcessingTransaction transaction,
         ЗапросСведенийV3? requestV3)
     {
         if (transaction.Status.Equals(QBCHProcessingStatus.Failure) || requestV3 is null)
@@ -76,7 +76,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void ValidateRequest(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         ЗапросСведенийЗапросV3 requestItem,
         int orderNumber)
@@ -90,7 +90,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void ValidateDul999(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         ЗапросСведенийЗапросV3 requestItem,
         int orderNumber)
@@ -117,7 +117,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void ValidateSubjectBirthDate(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         ЗапросСведенийЗапросV3 requestItem,
         int orderNumber)
@@ -136,7 +136,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void ValidateSubjectDocumentsIssueDate(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         ЗапросСведенийЗапросV3 requestItem,
         int orderNumber)
@@ -159,7 +159,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void ValidateLoanObligations(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         ЗапросСведенийЗапросV3 requestItem,
         int orderNumber)
@@ -176,7 +176,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void ValidateSnils(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         ЗапросСведенийЗапросV3 requestItem,
         int orderNumber)
@@ -195,7 +195,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void ValidatePlaceOfBirthAbsence(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode)
     {
         if (transaction.Attachment.RequestBody is null)
@@ -223,7 +223,7 @@ public static class AdditionalValidatorV3
     }
 
     private static void AddError(
-        QBCHProcessingTransactionV3 transaction,
+        QBCHProcessingTransaction transaction,
         СправочникРежимыЗапросаV3 requestMode,
         int orderNumber,
         AnswerErrorCode error)

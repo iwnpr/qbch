@@ -3,11 +3,11 @@ using Crypto_lib.Service;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using QBCH.Lib.qcb_xml.v3_0;
-using Qbch_db_lib.Services.Interfaces.V3;
+using Qbch_db_lib.Services.Interfaces;
 using qbch_lib;
-using qbch_lib.domain.aggregate.V3;
 using QBCH_lib.CommonTypes.Api;
 using QBCH_lib.Configuration;
+using QBCH_lib.domain.aggregate;
 using QBCHService_lib.Models;
 using QBCHService_lib.Services.Interfaces.V3;
 using System.Diagnostics;
@@ -52,7 +52,7 @@ public class QBCHServiceV3(
     /// </summary>
     /// <param name="transaction">Транзакция с телом запроса и техническим контекстом обработки.</param>
     /// <returns>Результат обработки с ответом <c>ОтветНаЗапросСведений</c>.</returns>
-    public async Task<QBCHTaskResult> RequestFromDB(QBCHProcessingTransactionV3 transaction)
+    public async Task<QBCHTaskResult> RequestFromDB(QBCHProcessingTransaction transaction)
     {
         await _storageService.AddHash(RedisConstants.DlRequestV3Scope, $"{transaction.Id}:{_ourBureauPsrn}", "task_start_date_time", DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff"));
 
@@ -180,7 +180,7 @@ public class QBCHServiceV3(
     /// <param name="client">HTTP-клиент для взаимодействия с внешним сервисом бюро.</param>
     /// <param name="bureau">Реквизиты целевого бюро кредитных историй.</param>
     /// <returns>Результат обработки, содержащий ответ бюро или информацию об ошибке.</returns>
-    public async Task<QBCHTaskResult> RequestFromExternalBureau(QBCHProcessingTransactionV3 transaction, HttpClient client, QBCHRequisite bureau)
+    public async Task<QBCHTaskResult> RequestFromExternalBureau(QBCHProcessingTransaction transaction, HttpClient client, QBCHRequisite bureau)
     {
         var request = transaction.GetRequest<ЗапросСведений>();
 

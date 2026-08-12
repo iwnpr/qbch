@@ -13,10 +13,10 @@ using QBCH_api.QBCHProcessing.V3.ResponseDataCollect.Command;
 using QBCH_api.QBCHProcessing.V3.StoreProcessingData.Event;
 using QBCH_api.Services.Interfaces.V3;
 using qbch_lib;
-using qbch_lib.domain.aggregate.V3;
 using qbch_lib.domain.errors;
 using QBCH_lib.CommonTypes.Api;
 using QBCH_lib.Configuration;
+using QBCH_lib.domain.aggregate;
 using QBCH_lib.Services.Interfaces.V3;
 using System.Globalization;
 using System.Security.Cryptography.X509Certificates;
@@ -81,7 +81,7 @@ public class QBCHIIIController(IMediator mediator,
         var actionStopwatch = System.Diagnostics.Stopwatch.StartNew();
         _logger.LogDebug("Начало = {Action} v{Version} в {RequestTime}", nameof(DlRequest_v_3), apiVersion, requestTime);
 
-        var transaction = await _mediator.Send(new CreateToValidateCommandV3(apiVersion, Request));
+        var transaction = await _mediator.Send(new CreateToValidateCommand(apiVersion, Request));
         _logger.LogDebug("{guid} Request: {dt}", transaction.Id, requestTime);
 
         if (transaction.ProcessingErrors.Count != 0)
