@@ -1,0 +1,117 @@
+﻿using QBCH.Lib.qcb_xml.v3_0;
+using QBCH_lib.core;
+using System;
+using System.Security.Cryptography.X509Certificates;
+
+namespace qbch_lib.domain.entities;
+
+/// <summary>
+/// Клиентский запрос
+/// </summary>
+public class ClentRequest : Entity
+{
+    /// <summary>
+    /// Идентификатор запроса
+    /// </summary>
+    public string? RequestId { get; private set; }
+    /// <summary>
+    /// Метод запроса
+    /// </summary>
+    public string? RequestMethod { get; private set; }
+    /// <summary>
+    /// Дата-время запроса
+    /// </summary>
+    public string? RequestTime { get; private set; }
+    /// <summary>
+    /// ip адрес
+    /// </summary>
+    public string? IpAddress { get; private set; }
+    /// <summary>
+    /// Сертификат с которым установлено соединение
+    /// </summary>
+    public X509Certificate2? Certificate { get; private set; }
+    /// <summary>
+    /// ОГРН из запроса
+    /// </summary>
+    public string? RequestOGRN { get; private set; }
+    /// <summary>
+    /// ИНН из запроса
+    /// </summary>
+    public string? RequestINN { get; private set; }
+
+    /// <summary>
+    /// xml запроса
+    /// </summary>
+    public object? RequestPayload { get; private set; }
+
+    /// <summary>
+    /// Десериализованная модель запроса версии 3.0.
+    /// </summary>
+    public ЗапросСведений? Request => RequestPayload as ЗапросСведений;
+
+    /// <summary>
+    /// Конструктор
+    /// </summary>
+    /// <param name="id">Идентификатор</param>
+    /// <param name="requestMethod">Метод запроса</param>
+    /// <param name="requestTime">Время запроса</param>
+    /// <param name="ipAddress">ip адрес клиента</param>
+    /// <param name="certificate">Сертификат запроса</param>
+    private ClentRequest(Guid id,
+                        string requestMethod,
+                        DateTime requestTime,
+                        string? ipAddress,
+                        X509Certificate2? certificate) : base(id)
+    {
+        RequestMethod = requestMethod;
+        RequestTime = requestTime.ToString("dd.MM.yyyy HH:mm:ss:ffff");
+        IpAddress = ipAddress;
+        Certificate = certificate;
+    }
+
+    /// <summary>
+    /// Создать клиентский запрос
+    /// </summary>
+    /// <param name="requestMethod">Имя запроса</param>
+    /// <param name="requestTime">Время запроса</param>
+    /// <param name="ipAddress">ip адрес клиента</param>
+    /// <param name="certificate">Сертификат запроса</param>
+    /// <returns></returns>
+    public static ClentRequest Create(string requestMethod, DateTime requestTime, string? ipAddress, X509Certificate2? certificate)
+    {
+        return new ClentRequest(Guid.NewGuid(),
+                                requestMethod,
+                                requestTime,
+                                ipAddress,
+                                certificate);
+    }
+
+    /// <summary>
+    /// Установить десериализованную модель запроса версии 3.0.
+    /// </summary>
+    /// <param name="request">Запрос</param>
+    public void SetRequest(ЗапросСведений request)
+    {
+        RequestPayload = request;
+    }
+
+    /// <summary>
+    /// Установить данные сертификата запроса
+    /// </summary>
+    /// <param name="requestInn">ИНН</param>
+    /// <param name="requestOgrn">ОГРН</param>
+    public void SetRequestCertificateData(string? requestInn, string? requestOgrn)
+    {
+        RequestINN = requestInn;
+        RequestOGRN = requestOgrn;
+    }
+
+    /// <summary>
+    /// Установить идентификатор запроса
+    /// </summary>
+    /// <param name="requestId">Идентификатор</param>
+    public void SetRequestId(string requestId)
+    {
+        RequestId = requestId;
+    }
+}

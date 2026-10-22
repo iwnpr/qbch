@@ -1,0 +1,208 @@
+﻿using Cache_lib.Interfaces;
+using Confluent.Kafka;
+using KafkaService_lib.BackgroundPublishing;
+using KafkaService_lib.Services.Interfaces;
+using MediatR;
+using qbch_lib;
+using qbch_lib.Diagnostics;
+using qbch_lib.domain.aggregate.V3;
+using QBCH_lib.domain.DTOs;
+using System.Text;
+using System.Text.Json;
+
+namespace QBCH_api.QBCHProcessing.V3.StoreProcessingData.Event;
+
+public class QBCHProcessingCompleteHandlerV3(
+    ILogger<QBCHProcessingCompleteHandlerV3> logger,
+    IKeyValueStorageService storageService,
+    IKafkaService kafka,
+    KafkaPublishQueue kafkaPublishQueue,
+    LoggingContext logContext)
+    : INotificationHandler<QBCHProcessingCompleteV3>
+{
+    private const string ApiVersion = "3.0";
+
+    /// <summary>
+    /// Каталог backup-файлов — подкаталог рядом с exe приложения, а не относительно
+    /// текущего рабочего каталога: под IIS/systemd он может быть каким угодно.
+    /// </summary>
+    private static readonly string BackupDirectory = Path.Combine(AppContext.BaseDirectory, "backup");
+    private readonly ILogger<QBCHProcessingCompleteHandlerV3> _logger = logger;
+    private readonly IKeyValueStorageService _storageService = storageService;
+    private readonly IKafkaService _kafka = kafka;
+    private readonly KafkaPublishQueue _kafkaPublishQueue = kafkaPublishQueue;
+
+    public async Task Handle(QBCHProcessingCompleteV3 notification, CancellationToken cancellationToken)
+    {
+        var transaction = notification.Transaction;
+        if (!await TrySendDataToRedis(transaction))
+        {
+            _logger.LogCritical("Kafka-сообщение не отправлено, поскольку результат обработки не сохранён в Redis: сервис={QbchService}, статус обработки={ProcessingStatus}. TransactionId={TransactionId}",
+                transaction.ServiceName, transaction.Status, transaction.Id);
+            return;
+        }
+
+        // Отправка в Kafka уходит в фон: клиент не ждёт подтверждения от брокера.
+        // Вторым действием передаётся выгрузка в backup-файл — она выполняется, если отправку
+        // не успели выполнить до остановки приложения.
+        if (!_kafkaPublishQueue.TryEnqueue(() => SendDataToKafka(transaction), () => SaveBackupData(transaction), logContext))
+        {
+            _logger.LogCritical("Очередь отправки в Kafka переполнена: сервис={QbchService}. TransactionId={TransactionId}. Результат будет выгружен в backup-файл",
+                transaction.ServiceName, transaction.Id);
+            await SaveBackupData(transaction);
+        }
+    }
+
+    private async Task<bool> TrySendDataToRedis(QBCHProcessingTransactionV3 transaction)
+    {
+        try
+        {
+            var resultData = await ConstructResultData(transaction);
+            await _storageService.AddHashArray(RedisConstants.DlRequestV3Scope, transaction.Id.ToString(), resultData);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "Критическая ошибка при сохранении результата обработки в Redis: сервис={QbchService}, статус обработки={ProcessingStatus}. TransactionId={TransactionId}. Результат будет выгружен в backup-файл",
+               transaction.ServiceName, transaction.Status, transaction.Id);
+            await SaveBackupData(transaction);
+            return false;
+        }
+    }
+
+    private async Task SaveBackupData(QBCHProcessingTransactionV3 transaction)
+    {
+        try
+        {
+            var record = new BackupRecord
+            {
+                RequestTime = transaction.RequestTime,
+                IpAddress = transaction.ClentRequest.IpAddress,
+                Thumbprint = transaction.ClentRequest.Certificate?.Thumbprint,
+                CertificateRawData = transaction.ClentRequest.Certificate?.RawData,
+                ErrorCode = transaction.ProcessingErrors.FirstOrDefault()?.Code,
+                ErrorMessage = transaction.ProcessingErrors.FirstOrDefault()?.Message,
+                SignedRequest = transaction.Attachment.SignedRequestBody,
+                Request = transaction.Attachment.RequestBody,
+                RequestId = transaction.Id,
+                RequestType = (int?)transaction.ClentRequest.Request?.ТипЗапроса,
+                SignedResponse_Ticket = transaction.Response.SignedTicket,
+                ResponseXml_Ticket = transaction.Response.TicketXML,
+                SignedResponse = transaction.Response.SignedResponse,
+                ResponseXml = transaction.Response.ResponseXML,
+                ValidationTime = transaction.ValidateTime,
+                ResponseTime = transaction.ResponseTime
+            };
+
+            var sb = new StringBuilder();
+            sb.AppendLine(JsonSerializer.Serialize(record));
+            Directory.CreateDirectory(BackupDirectory);
+            var path = Path.Combine(BackupDirectory, $"{transaction.Id}.json");
+            await File.WriteAllTextAsync(path, sb.ToString());
+
+            // Полный путь в логе: по нему оператор находит файлы для утилиты восстановления.
+            _logger.LogCritical("Результат обработки сохранён в backup-файл {path}. TransactionId={TransactionId}. Для восстановления используйте QBCH_backup_tool", path, transaction.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "Критическая ошибка при сохранении backup-файла: каталог={BackupDirectory}. TransactionId={TransactionId}. Результат обработки потерян",
+               BackupDirectory, transaction.Id);
+        }
+    }
+
+    private async Task SendDataToKafka(QBCHProcessingTransactionV3 transaction)
+    {
+        try
+        {
+            var kafkaKey = $"QBCH:{RedisConstants.DlRequestV3Scope}:{transaction.Id}";
+            var isProduce = await _kafka.Produce(new Message<Null, string> { Value = kafkaKey });
+            if (!isProduce)
+            {
+                _logger.LogCritical("Kafka-сообщение для ключа QBCH:{serviceName}:{TransactionId} не отправлено. Результат будет выгружен в backup-файл",
+                                    transaction.ServiceName, transaction.Id);
+                await SaveBackupData(transaction);
+            }
+            else
+                _logger.LogDebug("Добавлено Kafka-сообщение для ключа QBCH:{serviceName}:{TransactionId}",
+                    transaction.ServiceName, transaction.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogCritical(ex, "Критическая ошибка при отправке результата обработки в Kafka: ключ=QBCH:{serviceName}:{TransactionId}. Результат будет выгружен в backup-файл",
+                transaction.ServiceName, transaction.Id);
+            await SaveBackupData(transaction);
+        }
+    }
+
+    private async Task<Dictionary<string, byte[]>> ConstructResultData(QBCHProcessingTransactionV3 transaction)
+    {
+        var (responseKind, schemaFamily) = ResolveResponseShape(transaction);
+
+        var dict = new Dictionary<string, byte[]>
+        {
+            { "api_version", Encoding.UTF8.GetBytes(ApiVersion) },
+            { "contract_version", Encoding.UTF8.GetBytes(ApiVersion) },
+            { "response_kind", Encoding.UTF8.GetBytes(responseKind) },
+            { "schema_family", Encoding.UTF8.GetBytes(schemaFamily) },
+            { "request_date_time", Encoding.UTF8.GetBytes(transaction.RequestTime) },
+            { "request_certificate_thumbprint", Encoding.UTF8.GetBytes(transaction.ClentRequest.Certificate?.Thumbprint ?? "-") },
+            { "response_date_time", Encoding.UTF8.GetBytes(transaction.ResponseTime ?? DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff")) },
+            { "response_guid", Encoding.UTF8.GetBytes(transaction.Id.ToString()) }
+        };
+
+        if (!string.IsNullOrWhiteSpace(transaction.ClentRequest.IpAddress))
+            dict.Add("ip_address", Encoding.UTF8.GetBytes(transaction.ClentRequest.IpAddress));
+
+        if (transaction.ClentRequest.Certificate?.RawData is not null)
+            dict.Add("request_certificate_data", transaction.ClentRequest.Certificate.RawData);
+
+        if (transaction.ProcessingErrors.Count > 0)
+        {
+            dict.Add("error_code", Encoding.UTF8.GetBytes(transaction.ProcessingErrors.First().Code.ToString()));
+            dict.Add("error_message", Encoding.UTF8.GetBytes(transaction.ProcessingErrors.First().Message));
+        }
+
+        if (transaction.Attachment.SignedRequestBody is not null)
+            dict.Add("request_signed_data", transaction.Attachment.SignedRequestBody);
+
+        if (transaction.Attachment.RequestBody is not null)
+            dict.Add("request_xml", transaction.Attachment.RequestBody);
+
+        if (transaction.ClentRequest.RequestId is not null)
+            dict.Add("request_id", Encoding.UTF8.GetBytes(transaction.ClentRequest.RequestId));
+
+        if (transaction.PackageValidationErrors.Count != 0)
+            dict.Add("package_error", Encoding.UTF8.GetBytes(JsonSerializer.Serialize(transaction.PackageValidationErrors)));
+
+        if (transaction.Response.SignedTicket is not null && transaction.Response.TicketXML is not null)
+        {
+            dict.Add("response_signed_data", transaction.Response.SignedTicket);
+            dict.Add("response_xml", transaction.Response.TicketXML);
+        }
+        else
+        {
+            if (transaction.Response.SignedResponse is not null)
+                dict.Add("response_signed_data", transaction.Response.SignedResponse);
+
+            if (transaction.Response.ResponseXML is not null)
+                dict.Add("response_xml", transaction.Response.ResponseXML);
+        }
+
+        if (!await _storageService.HashFieldExists(RedisConstants.DlRequestV3Scope, transaction.Id.ToString(), "ValidationTime"))
+            dict.Add("validation_date_time", Encoding.UTF8.GetBytes(transaction.ValidateTime ?? DateTime.Now.ToString("dd.MM.yyyy HH:mm:ss:ffff")));
+
+        return dict;
+    }
+
+    private static (string responseKind, string schemaFamily) ResolveResponseShape(QBCHProcessingTransactionV3 transaction)
+    {
+        if (string.Equals(transaction.ServiceName, "dlput", StringComparison.OrdinalIgnoreCase))
+            return ("putanswer", "qcb_putanswer");
+
+        var hasTicket = transaction.Response.SignedTicket is not null && transaction.Response.TicketXML is not null;
+        if (hasTicket || transaction.Status == QBCHProcessingStatus.Accepted || transaction.Status == QBCHProcessingStatus.Failure)
+            return ("ticket", "qcb_result");
+
+        return ("answer", "qcb_answer");
+    }
+}
